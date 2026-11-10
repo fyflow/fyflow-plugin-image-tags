@@ -48,12 +48,15 @@ const registry = (): RegistryDocument => ({
   groups: { [CPU_GROUP]: { type: "ConcurrentLimitGroup", config: { limit: availableParallelism() } } },
 });
 
-const flowOf = (settings: Record<string, unknown>): FlowDefinition => ({
+/** The Plugin's Node Types: one image per Task, and a sheet or folder of frames per Task. */
+const NODE_TYPES = ["ClassifyImage", "ClassifyFrames"] as const;
+
+const flowOf = (settings: Record<string, unknown>, type: string = "ClassifyImage"): FlowDefinition => ({
   flowId: "classify",
   version: 1,
   entry: "classify",
   nodes: [
-    { id: "classify", kind: "task", type: "ClassifyImage", settings, edges: [{ to: "done" }] },
+    { id: "classify", kind: "task", type, settings, edges: [{ to: "done" }] },
     { id: "done", kind: "end", outcome: "completed" },
   ],
 });
@@ -130,23 +133,25 @@ describe("the Plugin's declarations", () => {
       for (const model of models) expect(Object.keys(MODELS)).toContain(model);
   });
 
-  it("takes a Flow that names any classifier, and refuses one the catalogue lacks", () => {
-    for (const classifier of Object.keys(CLASSIFIERS)) expect(findingsOf(flowOf({ classifier }))).toEqual([]);
-    expect(findingsOf(flowOf({}))).toEqual([]);
+  it.each(NODE_TYPES)("takes a %s that names any classifier, and refuses one the catalogue lacks", (type) => {
+    for (const classifier of Object.keys(CLASSIFIERS))
+      expect(findingsOf(flowOf({ classifier }, type))).toEqual([]);
+    expect(findingsOf(flowOf({}, type))).toEqual([]);
     // FD-V33: a Node's settings break its Worker's settingsSchema.
-    expect(findingsOf(flowOf({ classifier: "nope" })).map((f) => f.rule)).toContain("FD-V33");
+    expect(findingsOf(flowOf({ classifier: "nope" }, type)).map((f) => f.rule)).toContain("FD-V33");
   });
 
-  it("takes a minConfidence from 0 to 1, and refuses anything else", () => {
+  it.each(NODE_TYPES)("takes a %s minConfidence from 0 to 1, and refuses anything else", (type) => {
     for (const minConfidence of [0, 0.35, 1])
-      expect(findingsOf(flowOf({ classifier: "style", minConfidence }))).toEqual([]);
-    expect(findingsOf(flowOf({ classifier: "anime_real", minConfidence: 0.9 }))).toEqual([]);
+      expect(findingsOf(flowOf({ classifier: "style", minConfidence }, type))).toEqual([]);
+    expect(findingsOf(flowOf({ classifier: "anime_real", minConfidence: 0.9 }, type))).toEqual([]);
     for (const minConfidence of [-0.1, 1.5, "0.6", null])
-      expect(findingsOf(flowOf({ minConfidence })).map((f) => f.rule)).toContain("FD-V33");
+      expect(findingsOf(flowOf({ minConfidence }, type)).map((f) => f.rule)).toContain("FD-V33");
   });
 
-  it("tells, in tag's description, every classifier's labels and uncertain", () => {
-    const schema = plugin.workers?.classifyImage?.outputSchema as
+  it.each(NODE_TYPES)("tells, in %s's tag description, every classifier's labels and uncertain", (type) => {
+    const worker = plugin.nodeTypes?.[type]?.worker ?? "";
+    const schema = plugin.workers?.[worker]?.outputSchema as
       | { properties: { tag: { description: string } } }
       | undefined;
     const description = schema?.properties.tag.description ?? "";
@@ -155,6 +160,54 @@ describe("the Plugin's declarations", () => {
       for (const label of labels) expect(description).toContain(label);
     }
     expect(description).toContain("uncertain");
+  });
+
+  it("runs ClassifyFrames two Tasks at a time in one process, on a Worker of its own", () => {
+    const frames = plugin.nodeTypes?.ClassifyFrames;
+    expect(frames?.worker).toBe("classifyFrames");
+    expect(frames?.pool).toMatchObject({ maxThreads: 1, maxConcurrentTasks: 2 });
+    expect((plugin.workers?.classifyFrames as { python?: string } | undefined)?.python).toBe(
+      "image_tags.worker:ClassifyFrames",
+    );
+  });
+
+  it("hands on, from ClassifyFrames, the agreement and each frame's timestamp, tag and scores", () => {
+    const schema = plugin.workers?.classifyFrames?.outputSchema as JsonSchema & {
+      required: string[];
+      examples: unknown[];
+    };
+    expect(schema.required).toEqual(expect.arrayContaining(["agreement", "frames", "tag", "scores"]));
+    for (const example of schema.examples) expect(findings(schema, example)).toEqual([]);
+    const result = {
+      path: "D:/Thumbnails/clip.jpg",
+      video: "D:/Videos/clip.mp4",
+      classifier: "anime_real",
+      labels: ["anime", "real"],
+      tag: "real",
+      confidence: 0.7,
+      scores: { anime: 0.3, real: 0.7 },
+      models: ["anime_real"],
+      agreement: 0.5,
+      frames: [
+        { timestamp: 1.5, tag: "real", scores: { anime: 0.1, real: 0.9 } },
+        { timestamp: null, tag: "anime", scores: { anime: 0.5, real: 0.5 } },
+      ],
+      warnings: ["timestamps drawn"],
+    };
+    expect(findings(schema, result)).toEqual([]);
+    expect(
+      findings(schema, { ...result, frames: [{ timestamp: "1.5", tag: "real", scores: {} }] }),
+    ).not.toEqual([]);
+  });
+
+  it("shows each Node Type with an icon of the app's set", () => {
+    const readme = readFileSync(join(root, "node_modules", "fyflow-plugin-sdk", "README.md"), "utf8");
+    const line = readme
+      .split("\n")
+      .find((l) => l.startsWith("A Node Type's `icon` names one of the app's icons"));
+    const icons = [...(line ?? "").matchAll(/`([a-z-]+)`/g)].map(([, icon]) => icon);
+    expect(icons).toContain("tag");
+    for (const nodeType of Object.values(plugin.nodeTypes ?? {})) expect(icons).toContain(nodeType.icon);
   });
 
   it("has Profile fields as fyflow-app takes them: a schema in fyflow's subset, start-up fields it declares", () => {
@@ -170,10 +223,10 @@ describe("the Plugin's declarations", () => {
       for (const field of nodeType.profile ?? []) expect(fields).toContain(field);
   });
 
-  it("takes a model folder on a Profile, as a start-up field ClassifyImage reads", () => {
+  it("takes a model folder on a Profile, as a start-up field both Node Types read", () => {
     const schema = plugin.profile?.schema as JsonSchema;
     expect(plugin.profile?.startup).toContain("modelDir");
-    expect(plugin.nodeTypes?.ClassifyImage?.profile).toContain("modelDir");
+    for (const type of NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).toContain("modelDir");
     expect(findings(schema, { modelDir: "D:/models" })).toEqual([]);
     expect(findings(schema, {})).toEqual([]);
     expect(findings(schema, { modelDir: 3 })).not.toEqual([]);

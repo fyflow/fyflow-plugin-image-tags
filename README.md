@@ -1,7 +1,7 @@
 # fyflow-plugin-image-tags
 
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
-CG or live action today, and for whole videos next (see `.scratch/image-tags/spec.md`).
+CG or live action, of one image or of a whole video from its frames (see `.scratch/image-tags/spec.md`).
 
 Needs a Host with `fyflow-plugin-sdk` 0.9.0 or later and Python Workers (uv). The Host makes the Plugin's Python
 environment from `python/uv.lock` on install; nothing else is set up by hand.
@@ -25,12 +25,56 @@ anime_classification is all but sure an image is not a painting at all (the four
 real is split evenly between `anime` and `cg`. Its default threshold, and the anime_classification version, are
 provisional until they are measured on real videos.
 
-It hands on `{ path, classifier, labels, tag, confidence, scores, models }`: `scores` holds each label's score,
-`confidence` the top one's, and `models` the catalogue models the classifier ran (both, for `style`). `tag` is the top
+It hands on `{ path, classifier, labels, tag, confidence, scores, models, warnings? }`: `scores` holds each label's
+score, `confidence` the top one's, and `models` the catalogue models the classifier ran (both, for `style`). `tag` is the top
 label when its score reaches **`minConfidence`** (a setting from 0 to 1; left empty, the classifier's own default
 above), else **`uncertain`**: a result, never a failure. So a Flow routes on `outcome.result.tag` with plain Edge
 conditions, `uncertain` included. A raw model's default is 0: it answers `uncertain` only when a Node asks for a
 `minConfidence`.
+
+Given a frame sheet, it scores the whole collage as one image and adds a `warnings` entry: `ClassifyFrames` reads
+sheets.
+
+### `ClassifyFrames`
+
+A whole video per Task, from its frames: the same `classifier` and `minConfidence` settings, and `path` in its input
+being one of
+
+- a **frame sheet** made by the video-thumbnail Plugin's `VideoThumbnail` (`fyflow-ext.video-thumbnail`): a JPEG
+  whose comment holds where each frame was drawn and its timestamp. Each frame is cut out at its place and
+  classified on its own; a cell with no frame is left out, and a sheet with none fails with
+  `The frame sheet has no frames:`. A sheet with timestamps drawn on it is still classified, with a `warnings`
+  entry: the models see the digits.
+- a **folder**: every image directly inside it (not in its subfolders), in name order, each one frame. A frame sheet
+  in a folder is a plain image. More than 1000 images fail with `The folder has more than 1000 images:` (a large
+  set belongs in a Flow `map` over `ClassifyImage`), none with `The folder has no images:`.
+- any other **image**: one frame.
+
+So `VideoThumbnail → ClassifyFrames → Edges on outcome.result.tag` needs no Transform: `VideoThumbnail` hands on the
+sheet's `path`.
+
+It hands on what `ClassifyImage` does, over all the frames, and more:
+
+- `scores`: each label's mean over the frames; `tag` the top one (or `uncertain` below `minConfidence`), and
+  `confidence` its mean score;
+- `agreement`: the share of frames whose own top label is the tag (the top label, when the tag is `uncertain`), from 0
+  to 1;
+- `frames`: each frame's `{ timestamp, tag, scores }`, in the sheet's or folder's order, `timestamp` (seconds into
+  the video) null for a folder or an image. A Flow can find mixed content in it (live action with anime inserts);
+- `video`: the video's path, as the sheet has it.
+
+Frames go through the models 32 at a time; the Task's progress moves on, and a Cancel is looked at, after each batch.
+One process per Profile runs two Tasks at once, so one Task's decoding and cutting overlaps the other's inference.
+
+#### Recommended `VideoThumbnail` settings
+
+| Setting | Value | Why |
+| --- | --- | --- |
+| `collage` | `{ mode: "grid", rows: 3, cols: 3 }` to `{ rows: 4, cols: 4 }`, `spacing: 0`, `margin: 0` | 9 to 16 frames: enough to outvote an odd one, few enough to stay quick. Each frame is resized to the model's input anyway, so the cell size need not match it. |
+| `selection` | `{ mode: "uniform", frames: <rows × cols>, startOffset, endOffset }`, the offsets past the openings and credits | Openings and credits are often drawn differently from the rest. |
+| `fit` | `"stretch"` | What imgutils does: the whole frame squashed into the cell, no crop, no bars. |
+| `renderTimestamps` | `false` | Drawn timestamps sit on the frames the models see (a warning says so). |
+| `skipBlankFrames` | `true` | A black or white frame says nothing. |
 
 ## Models
 
@@ -75,5 +119,7 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
   run fetches the pinned models into `python/.cache/`.
 - `pnpm plugin-folder [dir]`: the folder to install from the app's Plugins page ("Choose folder…"), by default
   `dist/image-tags/`.
+- `pnpm sheets`: remakes the frame-sheet fixtures (`python/tests/fixtures/sheets/`) with the video-thumbnail Plugin's
+  `thumbs-collage` service and test clip, from `../fyflow-plugin-video-thumbnails` (or `-- --thumbnails <folder>`).
 - `pnpm golden`: remakes the golden images and imgutils' scores for them (`python/tests/fixtures/`), in an
   environment of its own; run it by hand when a catalogue model changes.

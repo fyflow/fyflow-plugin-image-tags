@@ -12,6 +12,7 @@
   "scripts": {
     "plugin-folder": "node scripts/plugin-folder.ts",
     "golden": "uv run python/scripts/golden.py",
+    "sheets": "uv run python/scripts/sheets.py",
     "typecheck": "tsc -b",
     "lint": "biome check .",
     "format": "biome check --write .",

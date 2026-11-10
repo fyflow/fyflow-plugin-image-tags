@@ -10,14 +10,23 @@ from PIL import Image, UnidentifiedImageError
 
 def load_image(path: str) -> Image.Image:
     """The image at `path` in RGB, what is see-through made white."""
+    return to_rgb(open_image(path))
+
+
+def open_image(path: str) -> Image.Image:
+    """The image at `path` as it is in the file, read whole, with what Pillow says of it (`format`, `info`)."""
     try:
         with Image.open(path) as opened:
             opened.load()
-            image = opened
+            return opened
     except UnidentifiedImageError:
         raise ValueError(f"Not an image Pillow can read: {path}") from None
     except OSError as error:
         raise ValueError(f"Cannot read the image {path}: {error.strerror or error}") from None
+
+
+def to_rgb(image: Image.Image) -> Image.Image:
+    """`image` in RGB, what is see-through made white."""
     if has_alpha(image):
         rgba = image.convert("RGBA")
         white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))

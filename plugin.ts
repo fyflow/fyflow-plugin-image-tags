@@ -149,59 +149,148 @@ const inputSchema = {
   examples: [{ path: EXAMPLE_IMAGE }],
 };
 
+// What both Node Types hand on, as schema properties; ClassifyFrames adds its own.
+const resultProperties = {
+  path: { type: "string", description: "the image's absolute path" },
+  video: {
+    type: "string",
+    description:
+      "the video a frame sheet was made of, as its maker wrote it, when the image is a frame sheet",
+  },
+  classifier: { type: "string", description: "the classifier that ran" },
+  labels: {
+    type: "array",
+    items: { type: "string" },
+    description: "the classifier's labels, which `tag` is one of",
+  },
+  tag: {
+    type: "string",
+    description:
+      `the label with the highest score, or "${UNCERTAIN}" when that score is below minConfidence. ` +
+      `By classifier: ${labelsLine}`,
+  },
+  confidence: {
+    type: "number",
+    description: "the top label's score, from 0 to 1, even when the tag is uncertain",
+  },
+  // Keyed by the classifier's labels, so the schema can only say "an object": fyflow's subset takes no schema for
+  // `additionalProperties`.
+  scores: { type: "object", description: "every label's score, from 0 to 1, by label" },
+  models: {
+    type: "array",
+    items: { type: "string" },
+    description: "the catalogue models the classifier ran",
+  },
+  warnings: {
+    type: "array",
+    items: { type: "string" },
+    description: "what may make the answer less sure, when anything does",
+  },
+};
+
+const resultRequired = ["path", "classifier", "labels", "tag", "confidence", "scores", "models"];
+
+const STYLE_RESULT = {
+  classifier: "style",
+  labels: ["anime", "cg", "live_action"],
+  models: ["anime_real", "anime_classification"],
+};
+
 const outputSchema = {
   type: "object",
-  required: ["path", "classifier", "labels", "tag", "confidence", "scores", "models"],
-  properties: {
-    path: { type: "string", description: "the image's absolute path" },
-    classifier: { type: "string", description: "the classifier that ran" },
-    labels: {
-      type: "array",
-      items: { type: "string" },
-      description: "the classifier's labels, which `tag` is one of",
+  required: resultRequired,
+  properties: resultProperties,
+  examples: [
+    {
+      path: EXAMPLE_IMAGE,
+      ...STYLE_RESULT,
+      tag: "anime",
+      confidence: 0.93,
+      scores: { anime: 0.93, cg: 0.01, live_action: 0.06 },
     },
-    tag: {
+    {
+      path: "D:/Pictures/street.jpg",
+      ...STYLE_RESULT,
+      tag: UNCERTAIN,
+      confidence: 0.55,
+      scores: { anime: 0.4, cg: 0.05, live_action: 0.55 },
+    },
+  ],
+};
+
+// A made-up frame sheet, as VideoThumbnail hands one on, for ClassifyFrames' examples.
+const EXAMPLE_SHEET = "D:/Thumbnails/episode-01.3f9a1c2b7d4e.jpg";
+
+const framesInputSchema = {
+  type: "object",
+  description:
+    "The frames at `path`: a frame sheet made by VideoThumbnail (its frames are cut out by the places it wrote in " +
+    "it), a folder of images (each image directly inside it, in name order, at most 1000), or any other image as " +
+    "one frame",
+  required: ["path"],
+  properties: {
+    path: {
       type: "string",
-      description:
-        `the label with the highest score, or "${UNCERTAIN}" when that score is below minConfidence. ` +
-        `By classifier: ${labelsLine}`,
+      minLength: 1,
+      description: "A frame sheet, a folder of images or an image, an absolute path",
+    },
+  },
+  examples: [{ path: EXAMPLE_SHEET }, { path: "D:/Frames/episode-01" }],
+};
+
+const framesOutputSchema = {
+  type: "object",
+  required: [...resultRequired, "agreement", "frames"],
+  properties: {
+    ...resultProperties,
+    path: { type: "string", description: "the frame sheet's, folder's or image's absolute path" },
+    tag: {
+      ...resultProperties.tag,
+      description: `over all the frames: ${resultProperties.tag.description}`,
     },
     confidence: {
       type: "number",
-      description: "the top label's score, from 0 to 1, even when the tag is uncertain",
+      description: "the top label's mean score over the frames, from 0 to 1, even when the tag is uncertain",
     },
-    // Keyed by the classifier's labels, so the schema can only say "an object": fyflow's subset takes no schema for
-    // `additionalProperties`.
-    scores: { type: "object", description: "every label's score, from 0 to 1, by label" },
-    models: {
-      type: "array",
-      items: { type: "string" },
-      description: "the catalogue models the classifier ran",
+    scores: {
+      type: "object",
+      description: "every label's mean score over the frames, from 0 to 1, by label",
     },
-    warnings: {
+    agreement: {
+      type: "number",
+      description:
+        "the share of frames whose own top label is the tag (the top label, when the tag is uncertain), from 0 to 1",
+    },
+    frames: {
       type: "array",
-      items: { type: "string" },
-      description: "what may make the answer less sure, when anything does",
+      description: "each frame's own answer, in the sheet's or folder's order",
+      items: {
+        type: "object",
+        required: ["timestamp", "tag", "scores"],
+        properties: {
+          timestamp: {
+            type: ["number", "null"],
+            description: "where in the video the frame is, in seconds; null for a folder's frame or an image",
+          },
+          tag: { type: "string", description: "the frame's top label, or uncertain below minConfidence" },
+          scores: { type: "object", description: "the frame's score for every label, by label" },
+        },
+      },
     },
   },
   examples: [
     {
-      path: EXAMPLE_IMAGE,
-      classifier: "style",
-      labels: ["anime", "cg", "live_action"],
+      path: EXAMPLE_SHEET,
+      video: "D:/Videos/episode-01.mkv",
+      ...STYLE_RESULT,
       tag: "anime",
-      confidence: 0.93,
-      scores: { anime: 0.93, cg: 0.01, live_action: 0.06 },
-      models: ["anime_real", "anime_classification"],
-    },
-    {
-      path: "D:/Pictures/street.jpg",
-      classifier: "style",
-      labels: ["anime", "cg", "live_action"],
-      tag: UNCERTAIN,
-      confidence: 0.55,
-      scores: { anime: 0.4, cg: 0.05, live_action: 0.55 },
-      models: ["anime_real", "anime_classification"],
+      confidence: 0.88,
+      scores: { anime: 0.88, cg: 0.04, live_action: 0.08 },
+      agreement: 1,
+      frames: [
+        { timestamp: 312.4, tag: "anime", scores: { anime: 0.91, cg: 0.03, live_action: 0.06 } },
+        { timestamp: 624.8, tag: "anime", scores: { anime: 0.85, cg: 0.05, live_action: 0.1 } },
+      ],
     },
   ],
 };
@@ -224,6 +313,12 @@ export default definePlugin({
       inputSchema,
       outputSchema,
     },
+    classifyFrames: {
+      python: "image_tags.worker:ClassifyFrames",
+      settingsSchema,
+      inputSchema: framesInputSchema,
+      outputSchema: framesOutputSchema,
+    },
   },
   nodeTypes: {
     ClassifyImage: {
@@ -236,6 +331,17 @@ export default definePlugin({
       groups: [CPU_GROUP],
       icon: "tag",
       description: "Tells what one image is (anime, CG or live action, …) with local classifiers.",
+    },
+    ClassifyFrames: {
+      worker: "classifyFrames",
+      profile: ["modelDir"],
+      // One Python process per Profile; two Tasks at once, so that one Task's decoding and cutting out of frames
+      // overlaps the other's forward passes. A Task runs its frames through the models 32 at a time.
+      pool: { maxThreads: 1, maxConcurrentTasks: 2, idleTimeout: 60_000 },
+      groups: [CPU_GROUP],
+      icon: "image",
+      description:
+        "Tells what a whole video is (anime, CG or live action, …) from its VideoThumbnail frame sheet, or a folder of frames.",
     },
   },
 });
