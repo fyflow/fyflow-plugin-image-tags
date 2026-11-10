@@ -12,7 +12,7 @@ MODEL_URL = f"/{MODEL.remote_path}"
 
 def image_task(classifier=MODEL.id):
     """A Task through one model, so it downloads only `MODEL`."""
-    return Task({"path": str(IMAGES / "cartoon.png")}, {"classifier": classifier})
+    return Task({"path": str(IMAGES / "anime-02-train-window.jpg")}, {"classifier": classifier})
 
 
 def downloading(running):

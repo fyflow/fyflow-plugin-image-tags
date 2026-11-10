@@ -121,5 +121,13 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
   `dist/image-tags/`.
 - `pnpm sheets`: remakes the frame-sheet fixtures (`python/tests/fixtures/sheets/`) with the video-thumbnail Plugin's
   `thumbs-collage` service and test clip, from `../fyflow-plugin-video-thumbnails` (or `-- --thumbnails <folder>`).
-- `pnpm golden`: remakes the golden images and imgutils' scores for them (`python/tests/fixtures/`), in an
-  environment of its own; run it by hand when a catalogue model changes.
+- `pnpm golden`: remakes the synthetic test images (the small and see-through ones) and writes imgutils' scores for
+  them and the reference frames (`python/tests/fixtures/golden.json`), in an environment of its own; run it by hand
+  when a catalogue model changes.
+
+### Test images
+
+`python/tests/fixtures/images/` holds real reference frames (`<category>-NN-<what>.jpg`: anime, CG and live action,
+resized to 640 px) besides the synthetic images. They are not under this repository's MIT licence but each under its
+own: MIT (the AI-generated anime frames), CC BY 2.5, 3.0 and 4.0, and CC BY-SA 4.0 (shared under the same licence).
+Their authors, sources, licences and changes are in that folder's `CREDITS.md`, which goes with them.

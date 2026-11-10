@@ -12,6 +12,12 @@ from image_tags.worker import ClassifyImage
 from tests.conftest import FIXTURES, IMAGES, Context, Task, served
 
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text(encoding="utf-8"))
+#: Reference frames (see `fixtures/images/CREDITS.md`): one every classifier gets right with room to spare, a live-action
+#: one, and one `style` cannot decide (anime_classification calls it not a painting, and of the painted kinds puts
+#: 3d a little over the anime ones).
+ANIME = IMAGES / "anime-02-train-window.jpg"
+LIVE_ACTION = IMAGES / "live_action-02-bristol-street.jpg"
+UNDECIDED = IMAGES / "anime-05-bakery-interior.jpg"
 
 
 def classify(config, path, **settings):
@@ -19,9 +25,9 @@ def classify(config, path, **settings):
 
 
 def test_tells_anime_cg_or_live_action_by_default(hub, config):
-    result = classify(config, IMAGES / "cartoon.png")
+    result = classify(config, ANIME)
 
-    assert result["path"] == str(IMAGES / "cartoon.png")
+    assert result["path"] == str(ANIME)
     assert result["classifier"] == "style"
     assert result["labels"] == ["anime", "cg", "live_action"]
     assert result["tag"] == "anime"
@@ -32,13 +38,37 @@ def test_tells_anime_cg_or_live_action_by_default(hub, config):
     assert "warnings" not in result
 
 
+@pytest.mark.parametrize(
+    "image",
+    [
+        "anime-01-rainy-bus-stop.jpg",
+        "anime-02-train-window.jpg",
+        "anime-03-festival-night-market.jpg",
+        "anime-04-seaside-railway.jpg",
+        "anime-06-riverside-picnic.jpg",
+        "anime-07-yakitori-stall-portrait.jpg",
+        "live_action-01-office-interview.jpg",
+        "live_action-02-bristol-street.jpg",
+        "live_action-03-redwood-creek.jpg",
+        "live_action-04-dim-kitchen-ghana.jpg",
+        "live_action-05-oral-history-interview.jpg",
+    ],
+)
+def test_style_tags_a_clear_reference_frame_as_its_category(hub, config, image):
+    # The CG films are left out: `style` takes most of them for live action (a known weakness of the models).
+    result = classify(config, IMAGES / image)
+
+    assert result["tag"] == image.split("-")[0]
+
+
 def test_style_is_its_rule_over_both_models_scores(hub, config):
-    # cartoon.png's golden scores, through the rule by hand: what is not real, shared by the four painted kinds.
-    real = GOLDEN["anime_real"]["cartoon.png"]["real"]
-    kinds = GOLDEN["anime_classification"]["cartoon.png"]
+    # The undecided frame's golden scores, through the rule by hand: what is not real, shared by the four painted
+    # kinds. anime_classification is .87 sure it is not a painting, so the sharing out is most of the answer.
+    real = GOLDEN["anime_real"][UNDECIDED.name]["real"]
+    kinds = GOLDEN["anime_classification"][UNDECIDED.name]
     painted = kinds["3d"] + kinds["bangumi"] + kinds["comic"] + kinds["illustration"]
 
-    result = classify(config, IMAGES / "cartoon.png", classifier="style")
+    result = classify(config, UNDECIDED, classifier="style")
 
     assert result["scores"] == pytest.approx(
         {
@@ -52,7 +82,7 @@ def test_style_is_its_rule_over_both_models_scores(hub, config):
 
 @pytest.mark.parametrize("model", list(MODELS.values()), ids=list(MODELS))
 def test_each_model_is_a_classifier_with_its_own_labels(hub, config, model):
-    result = classify(config, IMAGES / "cartoon.png", classifier=model.id)
+    result = classify(config, ANIME, classifier=model.id)
 
     assert result["classifier"] == model.id
     assert result["labels"] == list(model.labels)
@@ -63,18 +93,31 @@ def test_each_model_is_a_classifier_with_its_own_labels(hub, config, model):
 
 
 def test_a_raw_model_answers_its_top_label_however_low(hub, config):
-    # photo.jpg is about 0.6 real to anime_real: about what `style` asks for, but a raw model asks for nothing.
-    result = classify(config, IMAGES / "photo.jpg", classifier="anime_real")
+    # anime_classification is torn on this illustration-like portrait: not_painting .54, illustration .45. Below what
+    # `style` asks for, but a raw model asks for nothing.
+    result = classify(config, IMAGES / "anime-07-yakitori-stall-portrait.jpg", classifier="anime_classification")
 
-    assert result["confidence"] < 0.7
-    assert result["tag"] == "real"
+    assert result["confidence"] < 0.6
+    assert result["tag"] == "not_painting"
+
+
+def test_a_frame_style_cannot_decide_is_uncertain_and_keeps_its_scores(hub, config):
+    # Not real (.02), but anime_classification shares the rest about evenly: cg .51, anime .47.
+    result = classify(config, UNDECIDED)
+
+    assert result["tag"] == "uncertain"
+    assert result["confidence"] == max(result["scores"].values())
+    assert result["confidence"] < 0.6
+    assert result["scores"]["live_action"] < 0.05
+    assert result["labels"] == ["anime", "cg", "live_action"]
 
 
 def test_a_top_score_below_min_confidence_is_uncertain_and_keeps_its_scores(hub, config):
-    sure = classify(config, IMAGES / "cartoon.png")
+    sure = classify(config, ANIME)
 
-    result = classify(config, IMAGES / "cartoon.png", minConfidence=0.99)
+    result = classify(config, ANIME, minConfidence=0.99)
 
+    assert sure["tag"] == "anime"
     assert result["tag"] == "uncertain"
     assert result["confidence"] == sure["confidence"]
     assert result["scores"] == sure["scores"]
@@ -82,7 +125,7 @@ def test_a_top_score_below_min_confidence_is_uncertain_and_keeps_its_scores(hub,
 
 
 def test_min_confidence_holds_for_a_raw_model_too(hub, config):
-    result = classify(config, IMAGES / "cartoon.png", classifier="anime_real", minConfidence=0.99)
+    result = classify(config, ANIME, classifier="anime_real", minConfidence=0.99)
 
     assert result["tag"] == "uncertain"
     assert result["confidence"] == result["scores"]["anime"]
@@ -90,7 +133,7 @@ def test_min_confidence_holds_for_a_raw_model_too(hub, config):
 
 def test_an_unknown_classifier_fails_naming_the_ones_there_are(hub, config):
     with pytest.raises(Exception, match=r"^No classifier `nope`: one of .*style.*anime_real.*anime_classification"):
-        classify(config, IMAGES / "cartoon.png", classifier="nope")
+        classify(config, ANIME, classifier="nope")
 
 
 @pytest.mark.parametrize("model", list(GOLDEN))
@@ -107,7 +150,7 @@ def test_scores_as_imgutils_does(hub, config, model, image):
 @pytest.mark.parametrize("model", list(MODELS.values()), ids=list(MODELS))
 def test_images_scored_in_one_batch_score_as_they_do_alone(hub, data_dir, model):
     models = Models(str(data_dir))
-    inputs = [to_input(load_image(str(IMAGES / name)), model.size) for name in ("cartoon.png", "photo.jpg")]
+    inputs = [to_input(load_image(str(name)), model.size) for name in (ANIME, LIVE_ACTION)]
 
     together = models.scores(model, np.stack(inputs))
     alone = [models.scores(model, one[np.newaxis])[0] for one in inputs]
@@ -119,8 +162,8 @@ def test_images_scored_in_one_batch_score_as_they_do_alone(hub, data_dir, model)
 def test_the_models_are_downloaded_on_first_use_and_kept(hub, config, data_dir):
     worker = ClassifyImage(config)
 
-    worker.run(Task({"path": str(IMAGES / "cartoon.png")}), Context())
-    worker.run(Task({"path": str(IMAGES / "photo.jpg")}), Context())
+    worker.run(Task({"path": str(ANIME)}), Context())
+    worker.run(Task({"path": str(LIVE_ACTION)}), Context())
     ClassifyImage(config).run(Task({"path": str(IMAGES / "tiny.jpg")}), Context())
 
     # The default classifier, `style`, needs both: each downloaded once, the first time.
@@ -136,7 +179,7 @@ def test_a_model_other_than_the_pinned_one_fails_the_task_and_is_not_kept(hub, c
     file.write_bytes(file.read_bytes()[:-1] + b"\0")
 
     with pytest.raises(Exception, match=r"^Could not get the model anime_real: .*sha256"):
-        classify(config, IMAGES / "cartoon.png", classifier="anime_real")
+        classify(config, ANIME, classifier="anime_real")
 
     assert not any(path.is_file() for path in (data_dir / "models").rglob("*"))
 
@@ -145,14 +188,14 @@ def test_a_model_that_cannot_be_downloaded_fails_the_task(hub, config):
     served(hub, MODELS["anime_real"]).unlink()
 
     with pytest.raises(Exception, match=r"^Could not get the model anime_real: .*404"):
-        classify(config, IMAGES / "cartoon.png", classifier="anime_real")
+        classify(config, ANIME, classifier="anime_real")
 
 
 def test_a_model_that_cannot_be_written_fails_the_task_as_one_it_cannot_get(hub, config, data_dir):
     (data_dir / "models").write_text("a file where the models' folder goes")
 
     with pytest.raises(Exception, match=r"^Could not get the model anime_real: "):
-        classify(config, IMAGES / "cartoon.png", classifier="anime_real")
+        classify(config, ANIME, classifier="anime_real")
 
 
 def test_the_next_task_tries_the_download_again(hub, config):
@@ -160,7 +203,7 @@ def test_the_next_task_tries_the_download_again(hub, config):
     good = file.read_bytes()
     file.write_bytes(b"not a model")
     worker = ClassifyImage(config)
-    task = Task({"path": str(IMAGES / "cartoon.png")}, {"classifier": "anime_real"})
+    task = Task({"path": str(ANIME)}, {"classifier": "anime_real"})
     with pytest.raises(Exception, match="Could not get the model"):
         worker.run(task, Context())
 

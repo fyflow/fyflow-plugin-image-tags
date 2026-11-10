@@ -1,12 +1,72 @@
 {
   "anime_real": {
-    "cartoon.png": {
-      "anime": 0.9384016394615173,
-      "real": 0.061598364263772964
+    "anime-01-rainy-bus-stop.jpg": {
+      "anime": 0.9542651176452637,
+      "real": 0.04573488235473633
     },
-    "photo.jpg": {
-      "real": 0.6016518473625183,
-      "anime": 0.3983481824398041
+    "anime-02-train-window.jpg": {
+      "anime": 0.9823492169380188,
+      "real": 0.01765083707869053
+    },
+    "anime-03-festival-night-market.jpg": {
+      "anime": 0.9628614783287048,
+      "real": 0.03713850677013397
+    },
+    "anime-04-seaside-railway.jpg": {
+      "anime": 0.9480531811714172,
+      "real": 0.051946744322776794
+    },
+    "anime-05-bakery-interior.jpg": {
+      "anime": 0.9821158647537231,
+      "real": 0.017884165048599243
+    },
+    "anime-06-riverside-picnic.jpg": {
+      "anime": 0.9559219479560852,
+      "real": 0.0440780408680439
+    },
+    "anime-07-yakitori-stall-portrait.jpg": {
+      "anime": 0.9594288468360901,
+      "real": 0.04057110846042633
+    },
+    "cg-01-big-buck-bunny.jpg": {
+      "real": 0.7202518582344055,
+      "anime": 0.2797481417655945
+    },
+    "cg-02-sintel.jpg": {
+      "real": 0.790696918964386,
+      "anime": 0.209303081035614
+    },
+    "cg-03-elephants-dream.jpg": {
+      "real": 0.9242569804191589,
+      "anime": 0.07574307173490524
+    },
+    "cg-04-cosmos-laundromat.jpg": {
+      "real": 0.9310832023620605,
+      "anime": 0.06891684979200363
+    },
+    "cg-05-coffee-run.jpg": {
+      "anime": 0.9792674779891968,
+      "real": 0.020732514560222626
+    },
+    "live_action-01-office-interview.jpg": {
+      "real": 0.9495031833648682,
+      "anime": 0.05049679055809975
+    },
+    "live_action-02-bristol-street.jpg": {
+      "real": 0.9829016923904419,
+      "anime": 0.017098335549235344
+    },
+    "live_action-03-redwood-creek.jpg": {
+      "real": 0.9925663471221924,
+      "anime": 0.007433651946485043
+    },
+    "live_action-04-dim-kitchen-ghana.jpg": {
+      "real": 0.9548322558403015,
+      "anime": 0.04516773298382759
+    },
+    "live_action-05-oral-history-interview.jpg": {
+      "real": 0.978348433971405,
+      "anime": 0.021651607006788254
     },
     "transparent.png": {
       "anime": 0.9625298976898193,
@@ -26,19 +86,124 @@
     }
   },
   "anime_classification": {
-    "cartoon.png": {
-      "illustration": 0.6555225253105164,
-      "bangumi": 0.14592762291431427,
-      "comic": 0.09538277983665466,
-      "not_painting": 0.09376532584428787,
-      "3d": 0.009401646442711353
+    "anime-01-rainy-bus-stop.jpg": {
+      "bangumi": 0.9712750315666199,
+      "illustration": 0.0279148630797863,
+      "3d": 0.00047837060992605984,
+      "not_painting": 0.0001890736020868644,
+      "comic": 0.00014264608034864068
     },
-    "photo.jpg": {
-      "bangumi": 0.9409167766571045,
-      "illustration": 0.029959067702293396,
-      "comic": 0.01625288650393486,
-      "3d": 0.007271070033311844,
-      "not_painting": 0.005600265692919493
+    "anime-02-train-window.jpg": {
+      "bangumi": 0.9805083870887756,
+      "illustration": 0.01421226467937231,
+      "not_painting": 0.004387904889881611,
+      "3d": 0.0008663834305480123,
+      "comic": 2.5171306333504617e-05
+    },
+    "anime-03-festival-night-market.jpg": {
+      "illustration": 0.9746308922767639,
+      "bangumi": 0.019827386364340782,
+      "3d": 0.003810257650911808,
+      "not_painting": 0.0016487515531480312,
+      "comic": 8.267593511845917e-05
+    },
+    "anime-04-seaside-railway.jpg": {
+      "bangumi": 0.88022381067276,
+      "3d": 0.09101022034883499,
+      "illustration": 0.026809636503458023,
+      "comic": 0.0011921488912776113,
+      "not_painting": 0.0007641807897016406
+    },
+    "anime-05-bakery-interior.jpg": {
+      "not_painting": 0.8730488419532776,
+      "3d": 0.06604636460542679,
+      "illustration": 0.04372064024209976,
+      "bangumi": 0.01709846965968609,
+      "comic": 8.563788287574425e-05
+    },
+    "anime-06-riverside-picnic.jpg": {
+      "illustration": 0.669211745262146,
+      "bangumi": 0.3215336501598358,
+      "3d": 0.005384150892496109,
+      "not_painting": 0.0030962557066231966,
+      "comic": 0.0007741525187157094
+    },
+    "anime-07-yakitori-stall-portrait.jpg": {
+      "not_painting": 0.5389366745948792,
+      "illustration": 0.45480307936668396,
+      "3d": 0.004747722297906876,
+      "bangumi": 0.0007766428752802312,
+      "comic": 0.0007358115981332958
+    },
+    "cg-01-big-buck-bunny.jpg": {
+      "3d": 0.9956608414649963,
+      "not_painting": 0.0029795197769999504,
+      "illustration": 0.0010776660637930036,
+      "bangumi": 0.00027360691456124187,
+      "comic": 8.40844222693704e-06
+    },
+    "cg-02-sintel.jpg": {
+      "3d": 0.9908718466758728,
+      "bangumi": 0.006856509484350681,
+      "not_painting": 0.0012682219967246056,
+      "illustration": 0.000836148567032069,
+      "comic": 0.00016729837807361037
+    },
+    "cg-03-elephants-dream.jpg": {
+      "3d": 0.8029001355171204,
+      "illustration": 0.18105079233646393,
+      "bangumi": 0.014827582985162735,
+      "comic": 0.0010890236590057611,
+      "not_painting": 0.00013250744086690247
+    },
+    "cg-04-cosmos-laundromat.jpg": {
+      "illustration": 0.8021074533462524,
+      "3d": 0.11048374325037003,
+      "bangumi": 0.07796952873468399,
+      "not_painting": 0.00619023060426116,
+      "comic": 0.0032490291632711887
+    },
+    "cg-05-coffee-run.jpg": {
+      "3d": 0.9791850447654724,
+      "not_painting": 0.01854671910405159,
+      "illustration": 0.0011468998854979873,
+      "bangumi": 0.001108573516830802,
+      "comic": 1.2815699847124051e-05
+    },
+    "live_action-01-office-interview.jpg": {
+      "3d": 0.9623257517814636,
+      "bangumi": 0.01874026097357273,
+      "not_painting": 0.01792038045823574,
+      "illustration": 0.0008588836062699556,
+      "comic": 0.00015479946159757674
+    },
+    "live_action-02-bristol-street.jpg": {
+      "3d": 0.9798234105110168,
+      "illustration": 0.009852980263531208,
+      "bangumi": 0.009642274118959904,
+      "not_painting": 0.0005479241372086108,
+      "comic": 0.00013345944171305746
+    },
+    "live_action-03-redwood-creek.jpg": {
+      "3d": 0.7504497766494751,
+      "illustration": 0.24319058656692505,
+      "bangumi": 0.0036134389229118824,
+      "comic": 0.0021097364369779825,
+      "not_painting": 0.0006364688160829246
+    },
+    "live_action-04-dim-kitchen-ghana.jpg": {
+      "3d": 0.9928164482116699,
+      "bangumi": 0.005331996362656355,
+      "not_painting": 0.0009098864393308759,
+      "illustration": 0.0008929102914407849,
+      "comic": 4.869983240496367e-05
+    },
+    "live_action-05-oral-history-interview.jpg": {
+      "3d": 0.981734037399292,
+      "illustration": 0.011456980369985104,
+      "bangumi": 0.00667536398395896,
+      "comic": 7.511359581258148e-05,
+      "not_painting": 5.8502213505562395e-05
     },
     "transparent.png": {
       "not_painting": 0.7939221858978271,

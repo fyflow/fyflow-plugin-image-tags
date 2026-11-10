@@ -2,7 +2,11 @@
 # requires-python = ">=3.12"
 # dependencies = ["dghs-imgutils==0.19.0", "onnxruntime>=1.21"]
 # ///
-"""Makes the golden images and what imgutils scores them: `python/tests/fixtures/golden.json`.
+"""Makes the synthetic golden images and writes what imgutils scores them and the reference frames:
+`python/tests/fixtures/golden.json`.
+
+The reference frames (`<category>-NN-<what>.jpg` in `tests/fixtures/images/`, see its `CREDITS.md`) are real frames
+kept in the repo; the synthetic ones, made here, are the small and see-through inputs.
 
 Run by hand (`pnpm golden`) when a catalogue model changes; never by `pnpm check`. It runs in an environment of its
 own (the inline metadata above), so imgutils and its `numpy<2` never reach the Plugin's lock. imgutils downloads
@@ -13,7 +17,6 @@ and hands back probabilities.
 """
 
 import json
-import random
 import sys
 from pathlib import Path
 
@@ -21,7 +24,7 @@ import numpy as np
 import onnxruntime as ort
 from huggingface_hub import hf_hub_download
 from imgutils.generic import classify_predict_score
-from PIL import Image, ImageDraw, ImageFilter
+from PIL import Image, ImageDraw
 
 PYTHON = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PYTHON))
@@ -30,30 +33,6 @@ from image_tags.models import sha256_of  # noqa: E402
 
 FIXTURES = PYTHON / "tests" / "fixtures"
 IMAGES = FIXTURES / "images"
-
-
-def cartoon(path):
-    """Flat colours inside black outlines, wider than tall."""
-    image = Image.new("RGB", (512, 384), (250, 236, 210))
-    draw = ImageDraw.Draw(image)
-    draw.ellipse((150, 60, 360, 300), fill=(255, 220, 190), outline=(0, 0, 0), width=6)
-    draw.ellipse((200, 140, 240, 200), fill=(40, 90, 200), outline=(0, 0, 0), width=4)
-    draw.ellipse((270, 140, 310, 200), fill=(40, 90, 200), outline=(0, 0, 0), width=4)
-    draw.arc((215, 210, 295, 260), 20, 160, fill=(0, 0, 0), width=5)
-    draw.polygon([(150, 140), (255, 20), (360, 140), (330, 70), (180, 70)], fill=(230, 80, 120), outline=(0, 0, 0))
-    image.save(path)
-
-
-def photo(path):
-    """A smooth gradient under blur and grain, as a camera might see a wall in soft light."""
-    rng = random.Random(7)
-    image = Image.new("RGB", (640, 360))
-    pixels = image.load()
-    for y in range(360):
-        for x in range(640):
-            base = 90 + x * 80 // 640 + y * 40 // 360
-            pixels[x, y] = tuple(max(0, min(255, base + tint + rng.randint(-18, 18))) for tint in (12, 0, -15))
-    image.filter(ImageFilter.GaussianBlur(1.2)).save(path, quality=88)
 
 
 def transparent(path):
@@ -85,14 +64,18 @@ def tiny(path):
     image.save(path, quality=90)
 
 
+#: The synthetic images: what is small or see-through, made here.
 MAKERS = {
-    "cartoon.png": cartoon,
-    "photo.jpg": photo,
     "transparent.png": transparent,
     "keyed.png": keyed,
     "keyed-grey.png": keyed_grey,
     "tiny.jpg": tiny,
 }
+
+
+def references():
+    """The reference frames' names: `<category>-NN-<what>.jpg`."""
+    return sorted(path.name for path in IMAGES.glob("*-[0-9][0-9]-*.jpg"))
 
 
 def as_imgutils_means(path):
@@ -133,6 +116,7 @@ def main():
     for name, make in MAKERS.items():
         make(IMAGES / name)
 
+    names = [*references(), *MAKERS]
     golden = {}
     for model in MODELS.values():
         used = hf_hub_download(model.repo, f"{model.name}/{model.file}")
@@ -140,7 +124,7 @@ def main():
             sys.exit(f"{model.repo}'s main has a {model.name} other than the catalogue's pinned one: re-pin it first")
         check_entry(model, used)
         golden[model.id] = {
-            name: classify_predict_score(as_imgutils_means(IMAGES / name), model.repo, model.name) for name in MAKERS
+            name: classify_predict_score(as_imgutils_means(IMAGES / name), model.repo, model.name) for name in names
         }
 
     out = FIXTURES / "golden.json"

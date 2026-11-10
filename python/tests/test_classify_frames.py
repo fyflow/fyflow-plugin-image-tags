@@ -15,6 +15,9 @@ SHEETS = FIXTURES / "sheets"
 #: and 2 empty cells. Its first frame was black and skipped, so the service took the one at 3 s instead.
 SAMPLE_TIMESTAMPS = [3.0, 1.08, 2.0, 3.0, 3.16, 4.0, 5.0]
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text(encoding="utf-8"))
+#: Reference frames (see `fixtures/images/CREDITS.md`), each 640 wide.
+ANIME = "anime-02-train-window.jpg"
+LIVE_ACTION = "live_action-02-bristol-street.jpg"
 
 
 def sheet(config, cells, render_timestamps=False, video="D:/Videos/clip.mp4", name="sheet.jpg"):
@@ -65,15 +68,17 @@ def test_a_frame_sheet_is_classified_frame_by_frame_with_its_timestamps_and_vide
 
 def test_each_frame_is_cut_from_the_sheet_at_its_rect(hub, config):
     # Golden images pasted at their own size onto a grey canvas, apart, with a null cell between them, the later one
-    # higher up: each frame must score as imgutils scores that image alone. (Two that survive the sheet's JPEG.)
-    path = sheet(config, [("tiny.jpg", (10, 400), 12.5), None, ("cartoon.png", (100, 20), 30.0)])
+    # higher up: each frame must score as imgutils scores that image alone. (Two that survive the sheet's JPEG: the
+    # train window, for one, does not quite, its not_painting .004 coming out .035.)
+    festival = "anime-03-festival-night-market.jpg"
+    path = sheet(config, [("tiny.jpg", (10, 400), 12.5), None, (festival, (100, 20), 30.0)])
 
     result = classify(config, path, classifier="anime_classification")
 
     assert [frame["timestamp"] for frame in result["frames"]] == [12.5, 30.0]
-    tiny, cartoon = (frame["scores"] for frame in result["frames"])
+    tiny, anime = (frame["scores"] for frame in result["frames"])
     assert tiny == pytest.approx(GOLDEN["anime_classification"]["tiny.jpg"], abs=0.02)
-    assert cartoon == pytest.approx(GOLDEN["anime_classification"]["cartoon.png"], abs=0.02)
+    assert anime == pytest.approx(GOLDEN["anime_classification"][festival], abs=0.02)
 
 
 def test_the_sample_sheet_s_frames_score_as_its_cells_cut_out_by_hand(hub, config, tmp_path):
@@ -93,31 +98,36 @@ def test_the_sample_sheet_s_frames_score_as_its_cells_cut_out_by_hand(hub, confi
 
 
 def test_the_answer_is_the_mean_over_frames_and_agreement_the_share_of_frames_whose_top_label_it_is(hub, config):
-    # Two cartoons (illustration .66, not_painting .09) and the tiny image (not_painting .90, illustration .06): the
-    # mean is illustration (2 × .656 + .064) / 3 = .459 over not_painting (2 × .094 + .900) / 3 = .362.
-    path = sheet(config, [("cartoon.png", (0, 0), 1.0), ("tiny.jpg", (520, 0), 2.0), ("cartoon.png", (600, 0), 3.0)])
+    # Two anime frames (anime .98 and .95) around a live-action one (live_action .98): the mean is anime
+    # (.982 + .000 + .954) / 3 = .645 over live_action (.018 + .983 + .046) / 3 = .349.
+    anime_again = "anime-01-rainy-bus-stop.jpg"
+    path = sheet(config, [(ANIME, (0, 0), 1.0), (LIVE_ACTION, (650, 0), 2.0), (anime_again, (1300, 0), 3.0)])
 
-    result = classify(config, path, classifier="anime_classification")
+    result = classify(config, path)
 
-    assert result["tag"] == "illustration"
-    assert result["confidence"] == pytest.approx(0.459, abs=0.02)
-    assert result["confidence"] == result["scores"]["illustration"]
-    assert result["scores"]["not_painting"] == pytest.approx(0.362, abs=0.02)
+    assert result["tag"] == "anime"
+    assert result["confidence"] == pytest.approx(0.645, abs=0.02)
+    assert result["confidence"] == result["scores"]["anime"]
+    assert result["scores"]["live_action"] == pytest.approx(0.349, abs=0.02)
     assert result["agreement"] == pytest.approx(2 / 3)
-    assert [frame["tag"] for frame in result["frames"]] == ["illustration", "not_painting", "illustration"]
+    assert [frame["tag"] for frame in result["frames"]] == ["anime", "live_action", "anime"]
     assert result["video"] == "D:/Videos/clip.mp4"
 
 
 def test_an_uncertain_answer_keeps_its_top_label_s_mean_and_agreement(hub, config):
-    path = sheet(config, [("cartoon.png", (0, 0), 1.0), ("tiny.jpg", (520, 0), 2.0), ("cartoon.png", (600, 0), 3.0)])
+    # As above, the last frame one `style` is less sure of (anime .86): the mean is anime
+    # (.982 + .000 + .862) / 3 = .615.
+    less_sure = "anime-04-seaside-railway.jpg"
+    path = sheet(config, [(ANIME, (0, 0), 1.0), (LIVE_ACTION, (650, 0), 2.0), (less_sure, (1300, 0), 3.0)])
 
-    result = classify(config, path, classifier="anime_classification", minConfidence=0.7)
+    result = classify(config, path, minConfidence=0.9)
 
     assert result["tag"] == "uncertain"
-    assert result["confidence"] == pytest.approx(0.459, abs=0.02)
+    assert result["confidence"] == pytest.approx(0.615, abs=0.02)
+    assert result["confidence"] == result["scores"]["anime"]
     assert result["agreement"] == pytest.approx(2 / 3)
-    # Each frame is held to the same threshold: the tiny image's not_painting (.90) reaches it, a cartoon's .66 not.
-    assert [frame["tag"] for frame in result["frames"]] == ["uncertain", "not_painting", "uncertain"]
+    # Each frame is held to the same threshold: the first two (.98) reach it, the last one's .86 not.
+    assert [frame["tag"] for frame in result["frames"]] == ["anime", "live_action", "uncertain"]
 
 
 def test_a_sheet_with_timestamps_drawn_is_classified_with_a_warning(hub, config):
@@ -129,7 +139,7 @@ def test_a_sheet_with_timestamps_drawn_is_classified_with_a_warning(hub, config)
 
 
 def test_a_sheet_without_a_video_path_has_no_video(hub, config):
-    result = classify(config, sheet(config, [("cartoon.png", (0, 0), 1.0)], video=None))
+    result = classify(config, sheet(config, [(ANIME, (0, 0), 1.0)], video=None))
 
     assert "video" not in result
 
@@ -142,12 +152,12 @@ def test_a_sheet_with_no_frames_fails(config):
 
 
 def test_a_plain_image_is_one_frame(hub, config):
-    result = classify(config, IMAGES / "cartoon.png", classifier="anime_classification")
+    result = classify(config, IMAGES / ANIME, classifier="anime_classification")
 
     assert len(result["frames"]) == 1
     assert result["frames"][0]["timestamp"] is None
     assert result["frames"][0]["scores"] == result["scores"]
-    assert result["scores"] == pytest.approx(GOLDEN["anime_classification"]["cartoon.png"], abs=0.02)
+    assert result["scores"] == pytest.approx(GOLDEN["anime_classification"][ANIME], abs=0.02)
     assert result["agreement"] == 1
     assert "video" not in result
 
@@ -155,21 +165,21 @@ def test_a_plain_image_is_one_frame(hub, config):
 def test_a_folder_is_its_images_in_name_order_each_a_frame_without_a_timestamp(hub, config, tmp_path):
     folder = tmp_path / "frames"
     folder.mkdir()
-    (folder / "b.png").write_bytes((IMAGES / "cartoon.png").read_bytes())
+    (folder / "b.jpg").write_bytes((IMAGES / ANIME).read_bytes())
     (folder / "a.jpg").write_bytes((IMAGES / "tiny.jpg").read_bytes())
     # A frame sheet in a folder is a plain image: one frame, no video, no warning.
     (folder / "c-sheet.jpg").write_bytes((SHEETS / "sample-timestamps.jpg").read_bytes())
     (folder / "notes.txt").write_text("not an image")
     (folder / "inner").mkdir()
-    (folder / "inner" / "0.png").write_bytes((IMAGES / "cartoon.png").read_bytes())
+    (folder / "inner" / "0.jpg").write_bytes((IMAGES / ANIME).read_bytes())
 
     result = classify(config, folder, classifier="anime_classification")
 
     assert result["path"] == str(folder)
     assert [frame["timestamp"] for frame in result["frames"]] == [None, None, None]
-    tiny, cartoon, _ = (frame["scores"] for frame in result["frames"])
+    tiny, anime, _ = (frame["scores"] for frame in result["frames"])
     assert tiny == pytest.approx(GOLDEN["anime_classification"]["tiny.jpg"], abs=0.02)
-    assert cartoon == pytest.approx(GOLDEN["anime_classification"]["cartoon.png"], abs=0.02)
+    assert anime == pytest.approx(GOLDEN["anime_classification"][ANIME], abs=0.02)
     assert "video" not in result
     assert "warnings" not in result
 
