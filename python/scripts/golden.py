@@ -7,8 +7,9 @@
 Run by hand (`pnpm golden`) when a catalogue model changes; never by `pnpm check`. It runs in an environment of its
 own (the inline metadata above), so imgutils and its `numpy<2` never reach the Plugin's lock. imgutils downloads
 from each repo's `main`, so the file it used is checked against the catalogue's pinned sha256 first; then the
-entry is checked against the model's own files: its labels against `meta.json`, its input size against the graph,
-and that the graph takes any batch size and hands back probabilities.
+entry is checked against the model's own files: its labels against `meta.json`, its input size against the graph
+(384×384 when the graph takes any height and width, as imgutils feeds it), and that the graph takes any batch size
+and hands back probabilities.
 """
 
 import json
@@ -94,6 +95,21 @@ MAKERS = {
 }
 
 
+def as_imgutils_means(path):
+    """The image to hand imgutils: its path, or, for one with a keyed see-through colour (a `transparency` without an
+    alpha channel), the image as RGBA.
+
+    imgutils means to put anything see-through on white, but for a keyed image its `add_background_for_rgba` pastes
+    the image with itself as the mask: Pillow refuses an RGB mask, and imgutils falls back to the image as it is, the
+    keyed colour kept; a greyscale image is taken as its own (grey-level) mask. As RGBA, imgutils' own step makes the
+    keyed colour white, as the Plugin does. `anime_real` barely notices; `anime_classification` does.
+    """
+    with Image.open(path) as image:
+        if image.mode in ("RGBA", "LA", "PA") or "transparency" not in image.info:
+            return str(path)
+        return image.convert("RGBA")
+
+
 def check_entry(model, onnx_file):
     """Exits naming what of `model`'s catalogue entry its own files contradict."""
     meta = json.loads(Path(hf_hub_download(model.repo, f"{model.name}/meta.json")).read_text(encoding="utf-8"))
@@ -102,7 +118,9 @@ def check_entry(model, onnx_file):
     session = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
     (given,) = session.get_inputs()
     width, height = model.size
-    if given.name != "input" or isinstance(given.shape[0], int) or list(given.shape[1:]) != [3, height, width]:
+    # A graph that takes any height and width is fed 384×384 by imgutils, so the entry must say that.
+    dims = given.shape[2:] if all(isinstance(dim, int) for dim in given.shape[2:]) else [384, 384]
+    if given.name != "input" or isinstance(given.shape[0], int) or [given.shape[1], *dims] != [3, height, width]:
         sys.exit(f"{model.id}: the graph takes {given.name} {given.shape}, not input [batch, 3, {height}, {width}]")
     batch = np.random.default_rng(0).uniform(-1, 1, (2, 3, height, width)).astype(np.float32)
     (output,) = session.run(["output"], {"input": batch})
@@ -122,7 +140,7 @@ def main():
             sys.exit(f"{model.repo}'s main has a {model.name} other than the catalogue's pinned one: re-pin it first")
         check_entry(model, used)
         golden[model.id] = {
-            name: classify_predict_score(str(IMAGES / name), model.repo, model.name) for name in MAKERS
+            name: classify_predict_score(as_imgutils_means(IMAGES / name), model.repo, model.name) for name in MAKERS
         }
 
     out = FIXTURES / "golden.json"

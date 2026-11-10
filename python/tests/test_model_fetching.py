@@ -10,8 +10,9 @@ MODEL = MODELS["anime_real"]
 MODEL_URL = f"/{MODEL.remote_path}"
 
 
-def image_task():
-    return Task({"path": str(IMAGES / "cartoon.png")})
+def image_task(classifier=MODEL.id):
+    """A Task through one model, so it downloads only `MODEL`."""
+    return Task({"path": str(IMAGES / "cartoon.png")}, {"classifier": classifier})
 
 
 def downloading(running):
@@ -116,9 +117,11 @@ def test_a_model_other_than_the_pinned_one_fails_every_task_waiting_and_leaves_n
 def test_a_model_dir_is_used_and_nothing_is_downloaded(hub, config, model_dir, data_dir):
     config["modelDir"] = str(model_dir)
 
-    result = ClassifyImage(config).run(image_task(), Context())
+    # `style`, which needs both models.
+    result = ClassifyImage(config).run(image_task("style"), Context())
 
     assert result["tag"] == "anime"
+    assert result["models"] == ["anime_real", "anime_classification"]
     assert hub.requests == []
     assert files_under(data_dir / "models") == []
 

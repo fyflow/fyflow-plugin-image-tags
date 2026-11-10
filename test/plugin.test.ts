@@ -58,6 +58,29 @@ const flowOf = (settings: Record<string, unknown>): FlowDefinition => ({
   ],
 });
 
+/** The Python catalogue's classifiers and model files, as the TypeScript mirrors spell them (asked once). */
+let catalogue: { default: string; classifiers: unknown; models: unknown } | undefined;
+const pythonCatalogue = () => {
+  catalogue ??= JSON.parse(
+    execFileSync(
+      "uv",
+      [
+        "run",
+        "--quiet",
+        "python",
+        "-c",
+        "import json; from image_tags.catalogue import CLASSIFIERS, MODELS, DEFAULT_CLASSIFIER as d; " +
+          "print(json.dumps({'default': d, 'classifiers': {k: {'kind': c.kind, 'title': c.title, " +
+          "'labels': list(c.labels), 'models': [m.id for m in c.models], 'minConfidence': c.min_confidence} " +
+          "for k, c in CLASSIFIERS.items()}, 'models': {k: {'repo': m.repo, 'commit': m.commit, 'name': m.name, " +
+          "'file': m.file, 'localPath': m.local_path} for k, m in MODELS.items()}}))",
+      ],
+      { cwd: project, encoding: "utf8" },
+    ),
+  );
+  return catalogue as { default: string; classifiers: unknown; models: unknown };
+};
+
 const findingsOf = (flow: FlowDefinition) => {
   const { nodeTypes = {} } = registry();
   return validateDefinition(flow, { predicates: [], workers, nodeTypes });
@@ -88,37 +111,50 @@ describe("the Plugin's declarations", () => {
     for (const nodeType of Object.values(plugin.nodeTypes ?? {})) expect(nodeType.inline).not.toBe(true);
   });
 
-  it("offers the classifiers the Python catalogue has, with their labels", () => {
-    const catalogue = JSON.parse(
-      execFileSync(
-        "uv",
-        [
-          "run",
-          "--quiet",
-          "python",
-          "-c",
-          "import json; from image_tags.catalogue import MODELS, DEFAULT_CLASSIFIER as d; " +
-            "print(json.dumps({'default': d, 'classifiers': {k: {'title': c.title, 'labels': list(c.labels)} " +
-            "for k, c in MODELS.items()}, 'models': {k: {'repo': c.repo, 'commit': c.commit, 'name': c.name, " +
-            "'file': c.file, 'localPath': c.local_path} for k, c in MODELS.items()}}))",
-        ],
-        { cwd: project, encoding: "utf8" },
-      ),
-    );
-    expect(catalogue).toEqual({
-      default: DEFAULT_CLASSIFIER,
-      classifiers: CLASSIFIERS,
-      models: Object.fromEntries(
-        Object.entries(MODELS).map(([id, model]) => [id, { ...model, localPath: localPathOf(model) }]),
-      ),
-    });
+  it("offers the classifiers the Python catalogue has: its presets and models, their labels and thresholds", () => {
+    expect(pythonCatalogue().classifiers).toEqual(CLASSIFIERS);
+    expect(pythonCatalogue().default).toBe(DEFAULT_CLASSIFIER);
+    expect(Object.keys(CLASSIFIERS)).toContain(DEFAULT_CLASSIFIER);
   });
 
-  it("takes a Flow that names a classifier, and refuses one the catalogue lacks", () => {
-    expect(findingsOf(flowOf({ classifier: "anime_real" }))).toEqual([]);
-    expect(findingsOf(flowOf({})).map((f) => f.rule)).toEqual([]);
+  it("knows the model files the Python catalogue pins, and keeps them where it does", () => {
+    expect(pythonCatalogue().models).toEqual(
+      Object.fromEntries(
+        Object.entries(MODELS).map(([id, model]) => [id, { ...model, localPath: localPathOf(model) }]),
+      ),
+    );
+  });
+
+  it("runs presets over models it knows", () => {
+    for (const { models } of Object.values(CLASSIFIERS))
+      for (const model of models) expect(Object.keys(MODELS)).toContain(model);
+  });
+
+  it("takes a Flow that names any classifier, and refuses one the catalogue lacks", () => {
+    for (const classifier of Object.keys(CLASSIFIERS)) expect(findingsOf(flowOf({ classifier }))).toEqual([]);
+    expect(findingsOf(flowOf({}))).toEqual([]);
     // FD-V33: a Node's settings break its Worker's settingsSchema.
     expect(findingsOf(flowOf({ classifier: "nope" })).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("takes a minConfidence from 0 to 1, and refuses anything else", () => {
+    for (const minConfidence of [0, 0.35, 1])
+      expect(findingsOf(flowOf({ classifier: "style", minConfidence }))).toEqual([]);
+    expect(findingsOf(flowOf({ classifier: "anime_real", minConfidence: 0.9 }))).toEqual([]);
+    for (const minConfidence of [-0.1, 1.5, "0.6", null])
+      expect(findingsOf(flowOf({ minConfidence })).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("tells, in tag's description, every classifier's labels and uncertain", () => {
+    const schema = plugin.workers?.classifyImage?.outputSchema as
+      | { properties: { tag: { description: string } } }
+      | undefined;
+    const description = schema?.properties.tag.description ?? "";
+    for (const [id, { labels }] of Object.entries(CLASSIFIERS)) {
+      expect(description).toContain(id);
+      for (const label of labels) expect(description).toContain(label);
+    }
+    expect(description).toContain("uncertain");
   });
 
   it("has Profile fields as fyflow-app takes them: a schema in fyflow's subset, start-up fields it declares", () => {
@@ -160,7 +196,7 @@ describe("the Plugin's status", () => {
 
     expect(status.level).toBe("info");
     expect(status.summary).toBe("Models download on first use");
-    expect(JSON.stringify(status.details)).toContain("anime_real");
+    for (const id of Object.keys(MODELS)) expect(JSON.stringify(status.details)).toContain(id);
   });
 
   it("is ok once every model is in the data directory", async () => {
@@ -174,6 +210,6 @@ describe("the Plugin's status", () => {
     const status = await statusOf();
 
     expect(status.level).toBe("ok");
-    expect(status.summary).toContain("anime_real");
+    for (const id of Object.keys(MODELS)) expect(status.summary).toContain(id);
   });
 });

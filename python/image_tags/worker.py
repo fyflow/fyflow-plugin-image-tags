@@ -2,13 +2,15 @@
 
 import numpy as np
 
-from .catalogue import DEFAULT_CLASSIFIER, MODELS
+from .catalogue import CLASSIFIERS, DEFAULT_CLASSIFIER, answer
 from .models import Models
 from .preprocess import load_image, to_input
 
 
 class ClassifyImage:
-    """One image per Task, through one classifier of the catalogue (the `classifier` setting)."""
+    """One image per Task, through one classifier of the catalogue (the `classifier` setting): a model, or a preset
+    over several. Its top label is the `tag` when it reaches `minConfidence` (the classifier's own when the setting is
+    left empty), else `uncertain`."""
 
     def __init__(self, config):
         # `modelDir`, a Profile start-up field, is the folder of an offline machine's models: then nothing downloads.
@@ -18,21 +20,16 @@ class ClassifyImage:
         path = task.input.get("path") if isinstance(task.input, dict) else None
         if not isinstance(path, str) or path == "":
             raise ValueError("The input has no `path`: the image to classify")
-        classifier = task.settings.get("classifier", DEFAULT_CLASSIFIER)
-        model = MODELS.get(classifier)
-        if model is None:
-            raise ValueError(f"No classifier `{classifier}`: one of {', '.join(MODELS)}")
+        name = task.settings.get("classifier") or DEFAULT_CLASSIFIER
+        classifier = CLASSIFIERS.get(name)
+        if classifier is None:
+            raise ValueError(f"No classifier `{name}`: one of {', '.join(CLASSIFIERS)}")
 
         image = load_image(path)
-        scores = self.models.scores(model, to_input(image, model.size)[np.newaxis], ctx)[0]
-        by_label = {label: float(score) for label, score in zip(model.labels, scores, strict=True)}
-        tag = max(by_label, key=by_label.get)
-        return {
-            "path": path,
-            "classifier": model.id,
-            "labels": list(model.labels),
-            "tag": tag,
-            "confidence": by_label[tag],
-            "scores": by_label,
-            "models": [model.id],
-        }
+        inputs = {}  # by input size: models of the same size take the same tensor
+        scores = {}
+        for model in classifier.models:
+            if model.size not in inputs:
+                inputs[model.size] = to_input(image, model.size)[np.newaxis]
+            scores[model.id] = self.models.scores(model, inputs[model.size], ctx)
+        return {"path": path, **answer(classifier, classifier.score(scores)[0], task.settings.get("minConfidence"))}

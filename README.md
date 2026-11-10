@@ -1,7 +1,7 @@
 # fyflow-plugin-image-tags
 
-A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime
-or real today, and anime / CG / live action for whole videos next (see `.scratch/image-tags/spec.md`).
+A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
+CG or live action today, and for whole videos next (see `.scratch/image-tags/spec.md`).
 
 Needs a Host with `fyflow-plugin-sdk` 0.9.0 or later and Python Workers (uv). The Host makes the Plugin's Python
 environment from `python/uv.lock` on install; nothing else is set up by hand.
@@ -11,20 +11,33 @@ environment from `python/uv.lock` on install; nothing else is set up by hand.
 ### `ClassifyImage`
 
 One image per Task (`path` in its input: anything Pillow opens), through one classifier (the `classifier` setting):
+a **preset**, whose labels are computed by a rule from the models under it and stay the same when those models
+change, or a **model** as it is, whose labels are the model's own (switching models means rewriting Edges).
 
-| Classifier | Labels | Model |
-| --- | --- | --- |
-| `anime_real` (default) | anime, real | `deepghs/anime_real_cls` / `mobilenetv3_v1.4_dist` |
+| Classifier | Labels | From | Default `minConfidence` |
+| --- | --- | --- | --- |
+| `style` (default, preset) | anime, cg, live_action | `live_action` = anime_real's `real`; what is not real is shared out by anime_classification, `not_painting` dropped and the other four made to sum to 1: `cg` gets `3d`'s share, `anime` that of `bangumi`, `illustration` and `comic` | 0.6 |
+| `anime_real` (model) | anime, real | `deepghs/anime_real_cls` / `mobilenetv3_v1.4_dist` | 0 |
+| `anime_classification` (model) | 3d, bangumi, comic, illustration, not_painting | `deepghs/anime_classification` / `mobilenetv3_v1.3_dist` | 0 |
 
-It hands on `{ path, classifier, labels, tag, confidence, scores, models }`: `tag` is the label with the highest
-score, so a Flow routes on `outcome.result.tag` with plain Edge conditions.
+`style`'s `3d` comes from 3D-style illustrations, so how well it tells CG footage apart is still to be measured. If
+anime_classification is all but sure an image is not a painting at all (the four sum to less than 1e-6), what is not
+real is split evenly between `anime` and `cg`. Its default threshold, and the anime_classification version, are
+provisional until they are measured on real videos.
+
+It hands on `{ path, classifier, labels, tag, confidence, scores, models }`: `scores` holds each label's score,
+`confidence` the top one's, and `models` the catalogue models the classifier ran (both, for `style`). `tag` is the top
+label when its score reaches **`minConfidence`** (a setting from 0 to 1; left empty, the classifier's own default
+above), else **`uncertain`**: a result, never a failure. So a Flow routes on `outcome.result.tag` with plain Edge
+conditions, `uncertain` included. A raw model's default is 0: it answers `uncertain` only when a Node asks for a
+`minConfidence`.
 
 ## Models
 
 Each model is pinned to a Hugging Face commit and its file's sha256, and downloaded into the Plugin's data
 directory by the first Task that needs it (about 17 MB each); nothing downloads at install, and nothing else ever
-loads. A mirror of Hugging Face can be named with `HF_ENDPOINT` in the Host's environment. The deepghs models are
-OpenRAIL-licensed.
+loads. A mirror of Hugging Face can be named with `HF_ENDPOINT` in the Host's environment. `anime_real_cls` is
+OpenRAIL-licensed, `anime_classification` MIT.
 
 A download shows as the Task's progress ("Downloading the model anime_real"). Tasks of one Node Type and Profile that
 need a model at once share one download; a cancelled Task stops waiting at once, and the download itself stops when
@@ -49,6 +62,7 @@ The folder has the layout of the data directory's `models` folder:
 | Model | Put at (below `modelDir`) | Download from |
 | --- | --- | --- |
 | `anime_real` | `deepghs/anime_real_cls/097a6c1e9e62/mobilenetv3_v1.4_dist/model.onnx` | https://huggingface.co/deepghs/anime_real_cls/resolve/097a6c1e9e62866a435810c883a45a7cb2c7077d/mobilenetv3_v1.4_dist/model.onnx |
+| `anime_classification` | `deepghs/anime_classification/5ee62e06f5f4/mobilenetv3_v1.3_dist/model.onnx` | https://huggingface.co/deepghs/anime_classification/resolve/5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df/mobilenetv3_v1.3_dist/model.onnx |
 
 A machine that has run the Plugin online already holds this folder: its data directory's `models` folder can be
 copied whole.

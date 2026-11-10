@@ -5,10 +5,38 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CPU_GROUP, definePlugin, type PluginStatus } from "fyflow-plugin-sdk";
 
-/** The catalogue's classifiers, as `python/image_tags/catalogue.py` has them (a test holds the two together). */
+/**
+ * What a Node's `classifier` setting may name, as `python/image_tags/catalogue.py` has it (`CLASSIFIERS`; a test holds
+ * the two together): each preset, a fixed set of labels computed by a rule from the models it runs, and each model as
+ * it is. `minConfidence` is the threshold the classifier's top score must reach to be the `tag` when a Node sets none:
+ * a raw model's is 0, so it never answers `uncertain` unless asked.
+ */
 export const CLASSIFIERS = {
-  anime_real: { title: "Anime or real (deepghs anime_real_cls)", labels: ["anime", "real"] },
+  style: {
+    kind: "preset",
+    title: "Anime, CG or live action (anime_real and anime_classification)",
+    labels: ["anime", "cg", "live_action"],
+    models: ["anime_real", "anime_classification"],
+    minConfidence: 0.6,
+  },
+  anime_real: {
+    kind: "model",
+    title: "Anime or real (deepghs anime_real_cls)",
+    labels: ["anime", "real"],
+    models: ["anime_real"],
+    minConfidence: 0,
+  },
+  anime_classification: {
+    kind: "model",
+    title: "3D, bangumi, comic, illustration or not a painting (deepghs anime_classification)",
+    labels: ["3d", "bangumi", "comic", "illustration", "not_painting"],
+    models: ["anime_classification"],
+    minConfidence: 0,
+  },
 } as const;
+
+/** What a classifier answers when its top score is below its `minConfidence`: a result, never a failure. */
+export const UNCERTAIN = "uncertain";
 
 /** A catalogue model's file on Hugging Face: `<repo>/resolve/<commit>/<name>/<file>`. */
 export interface ModelFile {
@@ -18,12 +46,21 @@ export interface ModelFile {
   file: string;
 }
 
-/** The catalogue's model files, as `catalogue.py` pins them (the same test holds them together), for `status()`. */
+/**
+ * The catalogue's model files, as `catalogue.py` pins them (`MODELS`; a test holds them together), for `status()`.
+ * Every model a classifier runs is one of them.
+ */
 export const MODELS: Readonly<Record<string, ModelFile>> = {
   anime_real: {
     repo: "deepghs/anime_real_cls",
     commit: "097a6c1e9e62866a435810c883a45a7cb2c7077d",
     name: "mobilenetv3_v1.4_dist",
+    file: "model.onnx",
+  },
+  anime_classification: {
+    repo: "deepghs/anime_classification",
+    commit: "5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df",
+    name: "mobilenetv3_v1.3_dist",
     file: "model.onnx",
   },
 };
@@ -53,7 +90,7 @@ function modelsStatus(dataDir: string | undefined): PluginStatus {
   };
 }
 
-export const DEFAULT_CLASSIFIER = "anime_real";
+export const DEFAULT_CLASSIFIER = "style";
 
 const classifierIds = Object.keys(CLASSIFIERS);
 const labelsLine = Object.entries(CLASSIFIERS)
@@ -68,6 +105,16 @@ const settingsSchema = {
       description: `The classifier to run; left empty, ${DEFAULT_CLASSIFIER}. ${Object.entries(CLASSIFIERS)
         .map(([id, { title }]) => `${id}: ${title}`)
         .join("; ")}`,
+    },
+    minConfidence: {
+      type: "number",
+      minimum: 0,
+      maximum: 1,
+      description:
+        `The score the top label must reach to be the tag, else the tag is "${UNCERTAIN}"; left empty, the ` +
+        `classifier's own: ${Object.entries(CLASSIFIERS)
+          .map(([id, { minConfidence }]) => `${id} ${minConfidence}`)
+          .join(", ")}`,
     },
   },
   additionalProperties: false,
@@ -113,8 +160,16 @@ const outputSchema = {
       items: { type: "string" },
       description: "the classifier's labels, which `tag` is one of",
     },
-    tag: { type: "string", description: `the label with the highest score. By classifier: ${labelsLine}` },
-    confidence: { type: "number", description: "the tag's score, from 0 to 1" },
+    tag: {
+      type: "string",
+      description:
+        `the label with the highest score, or "${UNCERTAIN}" when that score is below minConfidence. ` +
+        `By classifier: ${labelsLine}`,
+    },
+    confidence: {
+      type: "number",
+      description: "the top label's score, from 0 to 1, even when the tag is uncertain",
+    },
     // Keyed by the classifier's labels, so the schema can only say "an object": fyflow's subset takes no schema for
     // `additionalProperties`.
     scores: { type: "object", description: "every label's score, from 0 to 1, by label" },
@@ -132,12 +187,21 @@ const outputSchema = {
   examples: [
     {
       path: EXAMPLE_IMAGE,
-      classifier: "anime_real",
-      labels: ["anime", "real"],
+      classifier: "style",
+      labels: ["anime", "cg", "live_action"],
       tag: "anime",
-      confidence: 0.94,
-      scores: { anime: 0.94, real: 0.06 },
-      models: ["anime_real"],
+      confidence: 0.93,
+      scores: { anime: 0.93, cg: 0.01, live_action: 0.06 },
+      models: ["anime_real", "anime_classification"],
+    },
+    {
+      path: "D:/Pictures/street.jpg",
+      classifier: "style",
+      labels: ["anime", "cg", "live_action"],
+      tag: UNCERTAIN,
+      confidence: 0.55,
+      scores: { anime: 0.4, cg: 0.05, live_action: 0.55 },
+      models: ["anime_real", "anime_classification"],
     },
   ],
 };
@@ -171,7 +235,7 @@ export default definePlugin({
       // A forward pass keeps a processor busy.
       groups: [CPU_GROUP],
       icon: "tag",
-      description: "Tells what one image is (anime or real, …) with a local classifier.",
+      description: "Tells what one image is (anime, CG or live action, …) with local classifiers.",
     },
   },
 });

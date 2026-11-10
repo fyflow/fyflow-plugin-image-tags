@@ -1,16 +1,30 @@
-"""The classifiers this Plugin knows: each model pinned to a Hugging Face commit and its file's sha256.
+"""The classifiers this Plugin knows: the models, each pinned to a Hugging Face commit and its file's sha256, and the
+presets, each a fixed set of labels computed from one or more models by a rule.
 
-Nothing outside this catalogue ever loads. An entry's labels, input size and output are read from the model's own
+Two names, kept apart on purpose: `MODELS` are the files (what is downloaded, kept and run), `CLASSIFIERS` what a
+Node's `classifier` setting may name (every model, and every preset). A preset's labels stay the same when the models
+under it change, so a Flow that branches on them survives a model swap; a model's labels are the model's own.
+
+Nothing outside this catalogue ever loads. A model entry's labels, input size and output are read from the model's own
 files when the entry is written; `scripts/golden.py` checks them against `meta.json` and the ONNX graph, and the golden
 tests hold the scores to imgutils.
 """
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from typing import ClassVar
+
+import numpy as np
+
+#: The tag of an answer whose top score is below the classifier's `minConfidence`: a result, never a failure.
+UNCERTAIN = "uncertain"
 
 
 @dataclass(frozen=True)
 class Model:
     """One ONNX classifier: `labels[i]` is the probability at `output[:, i]`, for any batch size."""
+
+    kind: ClassVar[str] = "model"
 
     id: str
     title: str
@@ -19,9 +33,21 @@ class Model:
     name: str
     sha256: str
     labels: tuple[str, ...]
-    #: The model's input, width and height: an image is squashed to it, its aspect ignored.
+    #: The model's input, width and height: an image is squashed to it, its aspect ignored. A model whose graph takes
+    #: any height and width gets imgutils' 384×384.
     size: tuple[int, int]
     file: str = "model.onnx"
+    #: A raw model never answers `uncertain` unless a Node asks for a `minConfidence`.
+    min_confidence: float = 0.0
+
+    @property
+    def models(self) -> tuple["Model", ...]:
+        """The models it runs: itself."""
+        return (self,)
+
+    def score(self, scores: Mapping[str, np.ndarray]) -> np.ndarray:
+        """Its labels' scores per frame, `[n, len(labels)]`, from each model's (keyed by model id): its own."""
+        return scores[self.id]
 
     @property
     def remote_path(self) -> str:
@@ -35,20 +61,116 @@ class Model:
         return f"{self.repo}/{self.commit[:12]}/{self.name}/{self.file}"
 
 
-MODELS: dict[str, Model] = {
-    model.id: model
-    for model in [
-        Model(
-            id="anime_real",
-            title="Anime or real (deepghs anime_real_cls)",
-            repo="deepghs/anime_real_cls",
-            commit="097a6c1e9e62866a435810c883a45a7cb2c7077d",
-            name="mobilenetv3_v1.4_dist",
-            sha256="c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0",
-            labels=("anime", "real"),
-            size=(384, 384),
-        ),
-    ]
-}
+@dataclass(frozen=True)
+class Preset:
+    """A fixed set of labels computed per frame from the scores of the models it needs, by its rule."""
 
-DEFAULT_CLASSIFIER = "anime_real"
+    kind: ClassVar[str] = "preset"
+
+    id: str
+    title: str
+    labels: tuple[str, ...]
+    models: tuple[Model, ...]
+    #: From each model's scores per frame, `[n, len(model.labels)]` keyed by model id, to the preset's,
+    #: `[n, len(labels)]`.
+    rule: Callable[[Mapping[str, np.ndarray]], np.ndarray]
+    min_confidence: float
+
+    def score(self, scores: Mapping[str, np.ndarray]) -> np.ndarray:
+        """Its labels' scores per frame, `[n, len(labels)]`, from each model's (keyed by model id): its rule's."""
+        return self.rule(scores)
+
+
+type Classifier = Model | Preset
+
+
+ANIME_REAL = Model(
+    id="anime_real",
+    title="Anime or real (deepghs anime_real_cls)",
+    repo="deepghs/anime_real_cls",
+    commit="097a6c1e9e62866a435810c883a45a7cb2c7077d",
+    name="mobilenetv3_v1.4_dist",
+    sha256="c02d68cc7f56dbcbcd4f41a10df190385c1f963f22c4eefb8d162869800ed3b0",
+    labels=("anime", "real"),
+    size=(384, 384),
+)
+
+# v1.3 rather than imgutils' default v1.5, for its better published accuracy; provisional until the eval set decides.
+ANIME_CLASSIFICATION = Model(
+    id="anime_classification",
+    title="3D, bangumi, comic, illustration or not a painting (deepghs anime_classification)",
+    repo="deepghs/anime_classification",
+    commit="5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df",
+    name="mobilenetv3_v1.3_dist",
+    sha256="fa233c04467cba4c68ecabd0065ad169c6fe867dc19799627cf5bd566a97d115",
+    labels=("3d", "bangumi", "comic", "illustration", "not_painting"),
+    # Its graph takes any height and width: imgutils' default.
+    size=(384, 384),
+)
+
+#: Below this, `anime_classification`'s four painted kinds together are taken as nothing (see `style`).
+PAINTED_FLOOR = 1e-6
+
+
+def style(scores: Mapping[str, np.ndarray]) -> np.ndarray:
+    """anime / cg / live_action per frame.
+
+    `live_action` is `anime_real`'s `real`. What is not real is shared out by `anime_classification`, its
+    `not_painting` dropped and the other four made to sum to 1: `cg` is `3d`'s share, `anime` that of `bangumi`,
+    `illustration` and `comic` together. So the three sum to 1.
+
+    When the four sum to (all but) nothing, `anime_classification` is sure the frame is not a painting at all and says
+    nothing about which kind of one: what is not real is then split evenly between `anime` and `cg`, so such a frame
+    is `uncertain` under the default threshold unless `anime_real` is sure it is real.
+    """
+    real = scores[ANIME_REAL.id][:, ANIME_REAL.labels.index("real")]
+    kinds = scores[ANIME_CLASSIFICATION.id]
+
+    def kind(label):
+        return kinds[:, ANIME_CLASSIFICATION.labels.index(label)]
+
+    painted = kind("3d") + kind("bangumi") + kind("comic") + kind("illustration")
+    told = painted >= PAINTED_FLOOR
+    share = np.where(told, painted, 1.0)
+    cg = np.where(told, kind("3d") / share, 0.5)
+    anime = np.where(told, (kind("bangumi") + kind("illustration") + kind("comic")) / share, 0.5)
+    return np.stack([(1 - real) * anime, (1 - real) * cg, real], axis=1)
+
+
+STYLE = Preset(
+    id="style",
+    title="Anime, CG or live action (anime_real and anime_classification)",
+    labels=("anime", "cg", "live_action"),
+    models=(ANIME_REAL, ANIME_CLASSIFICATION),
+    rule=style,
+    # Provisional until the eval set.
+    min_confidence=0.6,
+)
+
+#: The model files: what is downloaded, kept and run, and what the Plugin's status lists.
+MODELS: dict[str, Model] = {model.id: model for model in [ANIME_REAL, ANIME_CLASSIFICATION]}
+
+#: The presets, each over models of `MODELS`.
+PRESETS: dict[str, Preset] = {preset.id: preset for preset in [STYLE]}
+
+#: What a Node's `classifier` setting may name: every preset, and every model as it is.
+CLASSIFIERS: dict[str, Classifier] = {**PRESETS, **MODELS}
+
+DEFAULT_CLASSIFIER = STYLE.id
+
+
+def answer(classifier: Classifier, scores: np.ndarray, min_confidence: float | None = None) -> dict:
+    """What a classifier says of one image, from its labels' scores (`[len(labels)]`): its top label as the `tag` when
+    that label's score reaches `min_confidence` (the classifier's own when `None`), else `uncertain`. `confidence` is
+    the top label's score either way."""
+    threshold = classifier.min_confidence if min_confidence is None else min_confidence
+    by_label = {label: float(score) for label, score in zip(classifier.labels, scores, strict=True)}
+    top = max(by_label, key=by_label.get)
+    return {
+        "classifier": classifier.id,
+        "labels": list(classifier.labels),
+        "tag": top if by_label[top] >= threshold else UNCERTAIN,
+        "confidence": by_label[top],
+        "scores": by_label,
+        "models": [model.id for model in classifier.models],
+    }
