@@ -178,6 +178,64 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 - `pnpm golden`: remakes the synthetic test images (the small and see-through ones) and writes imgutils' scores for
   them and the reference frames (`python/tests/fixtures/golden.json`), in an environment of its own; run it by hand
   when a catalogue model changes.
+- `pnpm eval`: measures the classifiers on labelled videos and images; run by hand before a release is tagged (see
+  [Eval](#eval)).
+
+### Eval
+
+`python/scripts/eval.py` settles what the catalogue holds provisionally: `anime_classification`'s version (v1.3, the
+catalogue's, or v1.5, imgutils' default), `style`'s default `minConfidence` (0.6), and whether `cg` needs a change to
+`style`'s rule or another model (a zero-shot one, say). It needs no Host.
+
+```sh
+pnpm eval --references                                   # the reference frames alone
+pnpm eval -- eval.csv --collage <thumbs-collage>         # your videos
+pnpm eval -- eval.csv --references --collage <thumbs-collage>
+```
+
+The CSV holds `path,label` rows (a header is optional, relative paths are from the CSV's folder), labels `anime`, `cg`
+or `live_action`. A path may be a video, an image or a folder of images. A video's frame sheet is made by the
+video-thumbnail Plugin's `thumbs-collage` service (`--collage`, e.g.
+`../fyflow-plugin-video-thumbnails/bin/win32-x64/thumbs-collage.exe`) with the recommended settings above: a 3x3 grid
+(`--grid 4` for 4x4), cells 384x216, `fit: "stretch"`, no timestamps, blank frames skipped, and 0.5 s skipped at each
+end (`--start-offset` and `--end-offset`, in seconds: set them past the openings and credits). The sheets go to
+`python/.cache/eval/sheets/`, the models to `python/.cache/eval/models/`. `--references` adds the reference frames,
+labelled by their names.
+
+Each item goes through `ClassifyFrames` itself (the cpu build), and its frames through every model, `anime_classification`
+in both versions. It prints:
+
+- `style`'s confusion matrix at its default `minConfidence`, `uncertain` a column of its own;
+- each raw model's, with its accuracy in `style`'s terms: `anime_real`'s `real` as live action (it has no `cg`: its
+  CG row shows where CG goes, but is left out of its accuracy), `anime_classification`'s `3d` as CG, `bangumi`,
+  `comic` and `illustration` as anime, `not_painting` as live action;
+- `style`'s rule as shipped beside candidate rules, each with either `anime_classification` version: `3d_first` (a
+  strong `3d` overrides `real`: `cg` is `3d`'s score, the rest split by `anime_real`) and `real_pow4` (live action is
+  `real⁴`, so only a very sure `real` counts);
+- a table of thresholds against accuracy on what is answered and coverage (the share not `uncertain`), with a pick
+  per rule: the best accuracy among the thresholds that answer at least `--min-coverage` (90%) of the items, the
+  lowest of equals;
+- the time per item, making the sheet and classifying apart;
+- anime against everything else per rule and threshold: anime items found, and items that are not anime tagged
+  anime (anime matters most: `cg` and `live_action` are good to have, never at anime's cost);
+- the items any rule gets wrong, with each rule's tag and confidence.
+
+The reference frames are too few to decide anything. The decisions want your own videos, 30 to 50 per label, in the
+kinds you mean to sort; set the offsets shorter than your shortest video (a sheet of a video shorter than both offsets
+fails with `invalid offsets`).
+
+What it decided (2026-11-10, 132 videos of a home library, 56 anime, 48 CG, 45 live action, plus the reference
+frames; `--grid 4 --start-offset 120 --end-offset 420`):
+
+- **`anime_classification` v1.5** over v1.3: it finds more anime (the photographic backgrounds of Shinkai's films).
+- **`style`'s rule becomes `real_pow4`**, and its default `minConfidence` **0.55**. Anime against the rest: every
+  anime video found and none of the others tagged anime, from 0.4 to 0.6. CG: 36 of 48 right at 0.6, where the old
+  rule had 21 (most of the rest `uncertain`). Live action: never wrong, but about half of it `uncertain`.
+- **Telling CG from live action needs another model:** `anime_classification` calls every live-action video `3d`, and
+  `anime_real`'s `real` overlaps between CG films (0.4 to 0.73) and live action (0.6 to 0.95), so no rule over these
+  two models separates them well.
+- **"anime" is 2D drawn animation:** Western cartoons (Rick and Morty, The Little Mermaid, Ernest & Celestine) come
+  out anime, Chinese donghua and 3D CG anime too; stop-motion and puppets come out live action.
 
 ### Test images
 

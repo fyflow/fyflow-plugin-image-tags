@@ -52,9 +52,14 @@ SHEETS = {
 }
 
 
-def started(executable: Path, root: Path, font: Path) -> tuple[subprocess.Popen, str]:
-    args = [str(executable), "--bind", "127.0.0.1:0", "--root-path", str(root), "--font-file", str(font)]
-    args += ["--exit-on-stdin-close", "--max-workers", "2"]
+def started(executable: Path, root: Path | None = None, font: Path | None = None) -> tuple[subprocess.Popen, str]:
+    """The service, started, and its URL. With a `root`, a request's `path` is below it; without, absolute (as
+    `VideoThumbnail` starts it). The `font` draws timestamps."""
+    args = [str(executable), "--bind", "127.0.0.1:0", "--exit-on-stdin-close", "--max-workers", "2"]
+    if root is not None:
+        args += ["--root-path", str(root)]
+    if font is not None:
+        args += ["--font-file", str(font)]
     service = subprocess.Popen(
         args, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, cwd=executable.parent
     )
