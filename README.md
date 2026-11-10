@@ -16,14 +16,15 @@ change, or a **model** as it is, whose labels are the model's own (switching mod
 
 | Classifier | Labels | From | Default `minConfidence` |
 | --- | --- | --- | --- |
-| `style` (default, preset) | anime, cg, live_action | `live_action` = anime_real's `real`; what is not real is shared out by anime_classification, `not_painting` dropped and the other four made to sum to 1: `cg` gets `3d`'s share, `anime` that of `bangumi`, `illustration` and `comic` | 0.6 |
+| `style` (default, preset) | anime, cg, live_action | `live_action` = anime_real's `real`⁴ (only a very sure `real` counts); what is not live action is shared out by anime_classification, `not_painting` dropped and the other four made to sum to 1: `cg` gets `3d`'s share, `anime` that of `bangumi`, `illustration` and `comic` | 0.55 |
 | `anime_real` (model) | anime, real | `deepghs/anime_real_cls` / `mobilenetv3_v1.4_dist` | 0 |
-| `anime_classification` (model) | 3d, bangumi, comic, illustration, not_painting | `deepghs/anime_classification` / `mobilenetv3_v1.3_dist` | 0 |
+| `anime_classification` (model) | 3d, bangumi, comic, illustration, not_painting | `deepghs/anime_classification` / `mobilenetv3_v1.5_dist` | 0 |
 
-`style`'s `3d` comes from 3D-style illustrations, so how well it tells CG footage apart is still to be measured. If
-anime_classification is all but sure an image is not a painting at all (the four sum to less than 1e-6), what is not
-real is split evenly between `anime` and `cg`. Its default threshold, and the anime_classification version, are
-provisional until they are measured on real videos.
+`style` is made for anime first: measured on a home library (see [Eval](#eval)), it finds every anime video and tags
+nothing else anime. Telling CG from live action is weaker: anime_classification's `3d` comes from 3D-style
+illustrations and it calls live-action footage `3d` too, so a CG film anime_real takes for real comes out live action,
+and about half of live action comes out `uncertain`. If anime_classification is all but sure an image is not a
+painting at all (the four sum to less than 1e-6), what is not live action is split evenly between `anime` and `cg`.
 
 It hands on `{ path, classifier, labels, tag, confidence, scores, models, warnings? }`: `scores` holds each label's
 score, `confidence` the top one's, and `models` the catalogue models the classifier ran (both, for `style`). `tag` is the top
@@ -160,7 +161,7 @@ The folder has the layout of the data directory's `models` folder:
 | Model | Put at (below `modelDir`) | Download from |
 | --- | --- | --- |
 | `anime_real` | `deepghs/anime_real_cls/097a6c1e9e62/mobilenetv3_v1.4_dist/model.onnx` | https://huggingface.co/deepghs/anime_real_cls/resolve/097a6c1e9e62866a435810c883a45a7cb2c7077d/mobilenetv3_v1.4_dist/model.onnx |
-| `anime_classification` | `deepghs/anime_classification/5ee62e06f5f4/mobilenetv3_v1.3_dist/model.onnx` | https://huggingface.co/deepghs/anime_classification/resolve/5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df/mobilenetv3_v1.3_dist/model.onnx |
+| `anime_classification` | `deepghs/anime_classification/5ee62e06f5f4/mobilenetv3_v1.5_dist/model.onnx` | https://huggingface.co/deepghs/anime_classification/resolve/5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df/mobilenetv3_v1.5_dist/model.onnx |
 
 A machine that has run the Plugin online already holds this folder: its data directory's `models` folder can be
 copied whole.
@@ -183,9 +184,9 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 
 ### Eval
 
-`python/scripts/eval.py` settles what the catalogue holds provisionally: `anime_classification`'s version (v1.3, the
-catalogue's, or v1.5, imgutils' default), `style`'s default `minConfidence` (0.6), and whether `cg` needs a change to
-`style`'s rule or another model (a zero-shot one, say). It needs no Host.
+`python/scripts/eval.py` measures `style` as shipped (its rule over `anime_classification` v1.5, at its default
+`minConfidence`) beside what it replaced (`previous`: live action `real` itself, v1.3, 0.6) and a candidate rule, so a
+run shows what a change to the catalogue would change. It needs no Host.
 
 ```sh
 pnpm eval --references                                   # the reference frames alone
@@ -203,15 +204,16 @@ end (`--start-offset` and `--end-offset`, in seconds: set them past the openings
 labelled by their names.
 
 Each item goes through `ClassifyFrames` itself (the cpu build), and its frames through every model, `anime_classification`
-in both versions. It prints:
+in both versions (v1.5, the catalogue's, and v1.3, the one before). It prints:
 
-- `style`'s confusion matrix at its default `minConfidence`, `uncertain` a column of its own;
+- `style`'s confusion matrix at its default `minConfidence`, `uncertain` a column of its own, and the previous
+  configuration's at 0.6;
 - each raw model's, with its accuracy in `style`'s terms: `anime_real`'s `real` as live action (it has no `cg`: its
   CG row shows where CG goes, but is left out of its accuracy), `anime_classification`'s `3d` as CG, `bangumi`,
   `comic` and `illustration` as anime, `not_painting` as live action;
-- `style`'s rule as shipped beside candidate rules, each with either `anime_classification` version: `3d_first` (a
-  strong `3d` overrides `real`: `cg` is `3d`'s score, the rest split by `anime_real`) and `real_pow4` (live action is
-  `real⁴`, so only a very sure `real` counts);
+- `style`'s rule as shipped (live action `real⁴`) beside `previous` (live action `real`) and `3d_first` (a strong
+  `3d` overrides `real`: `cg` is `3d`'s score, the rest split by `anime_real`), each with either
+  `anime_classification` version;
 - a table of thresholds against accuracy on what is answered and coverage (the share not `uncertain`), with a pick
   per rule: the best accuracy among the thresholds that answer at least `--min-coverage` (90%) of the items, the
   lowest of equals;
@@ -225,10 +227,11 @@ kinds you mean to sort; set the offsets shorter than your shortest video (a shee
 fails with `invalid offsets`).
 
 What it decided (2026-11-10, 132 videos of a home library, 56 anime, 48 CG, 45 live action, plus the reference
-frames; `--grid 4 --start-offset 120 --end-offset 420`):
+frames; `--grid 4 --start-offset 120 --end-offset 420`), all now in the catalogue:
 
 - **`anime_classification` v1.5** over v1.3: it finds more anime (the photographic backgrounds of Shinkai's films).
-- **`style`'s rule becomes `real_pow4`**, and its default `minConfidence` **0.55**. Anime against the rest: every
+- **`style`'s rule became `real_pow4`** (live action `real⁴`: the script's `shipped` now; the old rule is its
+  `previous`), and its default `minConfidence` **0.55**. Anime against the rest: every
   anime video found and none of the others tagged anime, from 0.4 to 0.6. CG: 36 of 48 right at 0.6, where the old
   rule had 21 (most of the rest `uncertain`). Live action: never wrong, but about half of it `uncertain`.
 - **Telling CG from live action needs another model:** `anime_classification` calls every live-action video `3d`, and

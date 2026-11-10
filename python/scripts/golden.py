@@ -128,7 +128,7 @@ def main():
         }
 
     out = FIXTURES / "golden.json"
-    out.write_text(json.dumps(golden, indent=2) + "\n", encoding="utf-8")
+    out.write_text(json.dumps(golden, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"Wrote {out}")
 
 

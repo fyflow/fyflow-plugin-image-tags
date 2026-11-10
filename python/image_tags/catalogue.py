@@ -95,14 +95,15 @@ ANIME_REAL = Model(
     size=(384, 384),
 )
 
-# v1.3 rather than imgutils' default v1.5, for its better published accuracy; provisional until the eval set decides.
+# v1.5 (imgutils' default) rather than v1.3: v1.3's published accuracy is higher, but v1.5 found more anime on the
+# eval set.
 ANIME_CLASSIFICATION = Model(
     id="anime_classification",
     title="3D, bangumi, comic, illustration or not a painting (deepghs anime_classification)",
     repo="deepghs/anime_classification",
     commit="5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df",
-    name="mobilenetv3_v1.3_dist",
-    sha256="fa233c04467cba4c68ecabd0065ad169c6fe867dc19799627cf5bd566a97d115",
+    name="mobilenetv3_v1.5_dist",
+    sha256="ea8f4497b0e3ee86f43b6a6fd38884e25f960979a1debb5c4e1ee6a22e80d111",
     labels=("3d", "bangumi", "comic", "illustration", "not_painting"),
     # Its graph takes any height and width: imgutils' default.
     size=(384, 384),
@@ -115,15 +116,16 @@ PAINTED_FLOOR = 1e-6
 def style(scores: Mapping[str, np.ndarray]) -> np.ndarray:
     """anime / cg / live_action per frame.
 
-    `live_action` is `anime_real`'s `real`. What is not real is shared out by `anime_classification`, its
-    `not_painting` dropped and the other four made to sum to 1: `cg` is `3d`'s share, `anime` that of `bangumi`,
-    `illustration` and `comic` together. So the three sum to 1.
+    `live_action` is `anime_real`'s `real` to the fourth power, so only a very sure `real` counts as live action. What
+    is not live action is shared out by `anime_classification`, its `not_painting` dropped and the other four made to
+    sum to 1: `cg` is `3d`'s share, `anime` the rest (that of `bangumi`, `illustration` and `comic` together). So the
+    three sum to 1.
 
     When the four sum to (all but) nothing, `anime_classification` is sure the frame is not a painting at all and says
-    nothing about which kind of one: what is not real is then split evenly between `anime` and `cg`, so such a frame
-    is `uncertain` under the default threshold unless `anime_real` is sure it is real.
+    nothing about which kind of one: what is not live action is then split evenly between `anime` and `cg`, so such a
+    frame is `uncertain` under the default threshold unless `anime_real` is very sure it is real.
     """
-    real = scores[ANIME_REAL.id][:, ANIME_REAL.labels.index("real")]
+    live = scores[ANIME_REAL.id][:, ANIME_REAL.labels.index("real")] ** 4
     kinds = scores[ANIME_CLASSIFICATION.id]
 
     def kind(label):
@@ -133,8 +135,8 @@ def style(scores: Mapping[str, np.ndarray]) -> np.ndarray:
     told = painted >= PAINTED_FLOOR
     share = np.where(told, painted, 1.0)
     cg = np.where(told, kind("3d") / share, 0.5)
-    anime = np.where(told, (kind("bangumi") + kind("illustration") + kind("comic")) / share, 0.5)
-    return np.stack([(1 - real) * anime, (1 - real) * cg, real], axis=1)
+    anime = 1 - cg
+    return np.stack([(1 - live) * anime, (1 - live) * cg, live], axis=1)
 
 
 STYLE = Preset(
@@ -143,8 +145,8 @@ STYLE = Preset(
     labels=("anime", "cg", "live_action"),
     models=(ANIME_REAL, ANIME_CLASSIFICATION),
     rule=style,
-    # Provisional until the eval set.
-    min_confidence=0.6,
+    # Settled by the eval set: every anime video found, nothing else tagged anime.
+    min_confidence=0.55,
 )
 
 #: The model files: what is downloaded, kept and run, and what the Plugin's status lists.

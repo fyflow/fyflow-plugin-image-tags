@@ -1,5 +1,5 @@
 """The eval script's sums (`scripts/eval.py`, run by hand): the confusion matrix, the threshold table and its pick,
-the raw models' labels in `style`'s terms, the reference frames' labels and the candidate rules. Hand-worked values."""
+the raw models' labels in `style`'s terms, the reference frames' labels and the rules compared. Hand-worked values."""
 
 import importlib
 import sys
@@ -72,12 +72,20 @@ def test_csv_rows_are_read_relative_to_the_csv(tmp_path):
     assert (item.path, item.label, item.kind) == (tmp_path / "frames", "cg", "folder")
 
 
-def test_3d_first_lets_a_strong_3d_override_real():
+def test_the_rules_compared_are_the_shipped_one_the_previous_one_and_3d_first_over_either_version():
+    assert list(evaluation.RULES) == ["shipped", "previous", "3d_first"]
+    assert evaluation.RULES["shipped"] is evaluation.STYLE.rule
+    assert [model.name for model in evaluation.VERSIONS.values()] == ["mobilenetv3_v1.5_dist", "mobilenetv3_v1.3_dist"]
+
+
+def test_each_rule_on_one_frame():
     scores = {
         "anime_real": np.array([[0.2, 0.8]]),
         "anime_classification": np.array([[0.9, 0.05, 0.0, 0.05, 0.0]]),
     }
     # cg = 0.9; the 0.1 left split 0.2 anime / 0.8 real.
     assert evaluation.three_d_first(scores)[0].tolist() == pytest.approx([0.02, 0.9, 0.08])
-    # real^4 = 0.4096 live action; the rest 90% cg (3d's share of the painted 1.0).
-    assert evaluation.real_pow4(scores)[0].tolist() == pytest.approx([0.05904, 0.53136, 0.4096])
+    # shipped: real^4 = 0.4096 live action; the rest 90% cg (3d's share of the painted 1.0).
+    assert evaluation.RULES["shipped"](scores)[0].tolist() == pytest.approx([0.05904, 0.53136, 0.4096])
+    # previous: real .8 is live action; the .2 left 90% cg (3d's share of the painted 1.0).
+    assert evaluation.previous(scores)[0].tolist() == pytest.approx([0.02, 0.18, 0.8])

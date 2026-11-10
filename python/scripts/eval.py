@@ -1,8 +1,8 @@
 """Measures the classifiers on labelled videos and images: `pnpm eval -- <csv> [--collage <thumbs-collage>]`.
 
-Run by hand before a release is tagged; never by `pnpm check`. It decides `anime_classification`'s version (v1.3, the
-catalogue's, or v1.5, imgutils' default), `style`'s default `minConfidence`, and whether `cg` needs a change to
-`style`'s rule or another model.
+Run by hand before a release is tagged; never by `pnpm check`. It measures `style` as shipped (its rule over
+`anime_classification` v1.5, at its default `minConfidence`) beside the configuration it replaced (`previous`: live
+action `real`, `anime_classification` v1.3, 0.6) and a candidate rule, so a run shows what a change would change.
 
 The CSV holds `path,label` rows (a `path,label` header is optional; relative paths are from the CSV's folder), each
 label one of anime, cg, live_action. A path may be:
@@ -15,7 +15,7 @@ label one of anime, cg, live_action. A path may be:
 with it the CSV may be left out.
 
 Each item goes through `ClassifyFrames` itself (the cpu build, `style`, timed), and each frame through every model
-by the Worker's own code (`_score`), `anime_classification` in both versions. The candidate rules below are worked out
+by the Worker's own code (`_score`), `anime_classification` in both versions. The rules below are worked out
 from those frames' scores, as `ClassifyFrames` would: per frame, then the mean over the frames. Models download into
 `python/.cache/eval/models/` (gitignored), from Hugging Face or `HF_ENDPOINT`.
 """
@@ -48,18 +48,20 @@ LABELS = STYLE.labels
 CACHE = PYTHON / ".cache" / "eval"
 REFERENCES = PYTHON / "tests" / "fixtures" / "images"
 
-#: imgutils' default, from the same commit as the catalogue's v1.3: the same labels in its `meta.json`; its graph takes
-#: `input [batch, 3, 384, 384]` and gives `output` probabilities (checked 2026-11-10). Held here, not in the
-#: catalogue: if it wins, the catalogue is re-pinned to it and `pnpm golden` rerun (which checks the entry again).
-ANIME_CLASSIFICATION_V15 = replace(
+#: The version the catalogue had before the eval (2026-11-10) settled on v1.5, from the same commit: the same labels,
+#: input and output. Held here, not in the catalogue, to compare against.
+ANIME_CLASSIFICATION_V13 = replace(
     ANIME_CLASSIFICATION,
-    id="anime_classification_v1.5",
-    name="mobilenetv3_v1.5_dist",
-    sha256="ea8f4497b0e3ee86f43b6a6fd38884e25f960979a1debb5c4e1ee6a22e80d111",
+    id="anime_classification_v1.3",
+    name="mobilenetv3_v1.3_dist",
+    sha256="fa233c04467cba4c68ecabd0065ad169c6fe867dc19799627cf5bd566a97d115",
 )
-#: `anime_classification`'s versions, compared side by side.
-VERSIONS = {"v1.3": ANIME_CLASSIFICATION, "v1.5": ANIME_CLASSIFICATION_V15}
-RAW_MODELS = (ANIME_REAL, ANIME_CLASSIFICATION, ANIME_CLASSIFICATION_V15)
+#: `anime_classification`'s versions, compared side by side: the catalogue's first.
+VERSIONS = {"v1.5": ANIME_CLASSIFICATION, "v1.3": ANIME_CLASSIFICATION_V13}
+RAW_MODELS = (ANIME_REAL, ANIME_CLASSIFICATION, ANIME_CLASSIFICATION_V13)
+#: The configuration `style` shipped with before the eval: the `previous` rule over v1.3, at this `minConfidence`.
+PREVIOUS_VERSION = "v1.3"
+PREVIOUS_MIN_CONFIDENCE = 0.6
 
 #: A raw model's labels in `style`'s terms. `anime_real` has no `cg`: its `cg` row is shown (where CG goes is the
 #: question) but left out of its accuracy.
@@ -76,8 +78,8 @@ MAPPINGS = {
 EXPRESSIBLE = {"anime_real": ("anime", "live_action"), "anime_classification": LABELS}
 
 
-# --- Candidate `style` rules, eval only: each from the frames' scores keyed `anime_real` and `anime_classification`
-# --- (whichever version) to `[n, 3]` anime / cg / live_action, summing to 1.
+# --- `style` rules besides the shipped one, eval only: each from the frames' scores keyed `anime_real` and
+# --- `anime_classification` (whichever version) to `[n, 3]` anime / cg / live_action, summing to 1.
 
 
 def _real(scores):
@@ -88,13 +90,17 @@ def _kind(scores, label):
     return scores[ANIME_CLASSIFICATION.id][:, ANIME_CLASSIFICATION.labels.index(label)]
 
 
-def _painted_shares(scores):
-    """`cg` and `anime`'s shares of what is painted, as the shipped rule has them."""
+def previous(scores):
+    """The rule `style` shipped with before the eval: `live_action` is `real` itself; what is not real is shared out by
+    the four painted kinds, as the shipped rule does."""
+    real = _real(scores)
     painted = sum(_kind(scores, label) for label in ("3d", "bangumi", "comic", "illustration"))
     told = painted >= PAINTED_FLOOR
     share = np.where(told, painted, 1.0)
     cg = np.where(told, _kind(scores, "3d") / share, 0.5)
-    return 1 - cg, cg
+    cartoon = _kind(scores, "bangumi") + _kind(scores, "illustration") + _kind(scores, "comic")
+    anime = np.where(told, cartoon / share, 0.5)
+    return np.stack([(1 - real) * anime, (1 - real) * cg, real], axis=1)
 
 
 def three_d_first(scores):
@@ -104,17 +110,10 @@ def three_d_first(scores):
     return np.stack([(1 - cg) * (1 - real), cg, (1 - cg) * real], axis=1)
 
 
-def real_pow4(scores):
-    """`live_action` only when `anime_real` is very sure: `real^4`; the rest shared out as the shipped rule does."""
-    live = _real(scores) ** 4
-    anime, cg = _painted_shares(scores)
-    return np.stack([(1 - live) * anime, (1 - live) * cg, live], axis=1)
-
-
 RULES: dict[str, Callable[[Mapping[str, np.ndarray]], np.ndarray]] = {
     "shipped": shipped_style,
+    "previous": previous,
     "3d_first": three_d_first,
-    "real_pow4": real_pow4,
 }
 
 #: A sheet's cell, width and height: as wide as the models' input.
@@ -294,7 +293,7 @@ def score(worker: ClassifyFrames, frames_path: Path, scored: Scored) -> None:
             ]
         )
     # The same engine: the shipped rule on these frames gives what ClassifyFrames gave.
-    mine = shipped_style(scores_of(scored, "v1.3")).mean(axis=0)
+    mine = shipped_style(scores_of(scored, "v1.5")).mean(axis=0)
     theirs = np.array([result["scores"][label] for label in LABELS])
     if not np.allclose(mine, theirs, atol=1e-4):
         raise RuntimeError(f"ClassifyFrames gave {theirs}, the eval's own run {mine}")
@@ -361,13 +360,17 @@ def report(results: list[Scored], min_coverage: float) -> None:
             combos[f"{rule_name} {version}"] = (tops, means.max(axis=1).tolist())
 
     default = STYLE.min_confidence
-    tops, confidences = combos["shipped v1.3"]
-    print_matrix(
-        f"--- style as shipped (anime_classification v1.3), minConfidence {default}",
-        confusion(truths, tags(tops, confidences, default), LABELS, [*LABELS, UNCERTAIN]),
-        LABELS,
-        [*LABELS, UNCERTAIN],
-    )
+    for title, name, threshold in [
+        ("style as shipped (anime_classification v1.5)", "shipped v1.5", default),
+        (f"style as it was ({PREVIOUS_VERSION})", f"previous {PREVIOUS_VERSION}", PREVIOUS_MIN_CONFIDENCE),
+    ]:
+        tops, confidences = combos[name]
+        print_matrix(
+            f"--- {title}, minConfidence {threshold}",
+            confusion(truths, tags(tops, confidences, threshold), LABELS, [*LABELS, UNCERTAIN]),
+            LABELS,
+            [*LABELS, UNCERTAIN],
+        )
 
     anime_vs_rest(truths, combos)
 

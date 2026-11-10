@@ -98,35 +98,35 @@ def test_the_sample_sheet_s_frames_score_as_its_cells_cut_out_by_hand(hub, confi
 
 
 def test_the_answer_is_the_mean_over_frames_and_agreement_the_share_of_frames_whose_top_label_it_is(hub, config):
-    # Two anime frames (anime .98 and .95) around a live-action one (live_action .98): the mean is anime
-    # (.982 + .000 + .954) / 3 = .645 over live_action (.018 + .983 + .046) / 3 = .349.
+    # Two anime frames (anime 1.00 and 1.00) around a live-action one (live_action .93, anime .01): the mean is anime
+    # (1.000 + .007 + .999) / 3 = .668 over live_action (.000 + .933 + .000) / 3 = .311.
     anime_again = "anime-01-rainy-bus-stop.jpg"
     path = sheet(config, [(ANIME, (0, 0), 1.0), (LIVE_ACTION, (650, 0), 2.0), (anime_again, (1300, 0), 3.0)])
 
     result = classify(config, path)
 
     assert result["tag"] == "anime"
-    assert result["confidence"] == pytest.approx(0.645, abs=0.02)
+    assert result["confidence"] == pytest.approx(0.668, abs=0.02)
     assert result["confidence"] == result["scores"]["anime"]
-    assert result["scores"]["live_action"] == pytest.approx(0.349, abs=0.02)
+    assert result["scores"]["live_action"] == pytest.approx(0.311, abs=0.02)
     assert result["agreement"] == pytest.approx(2 / 3)
     assert [frame["tag"] for frame in result["frames"]] == ["anime", "live_action", "anime"]
     assert result["video"] == "D:/Videos/clip.mp4"
 
 
 def test_an_uncertain_answer_keeps_its_top_label_s_mean_and_agreement(hub, config):
-    # As above, the last frame one `style` is less sure of (anime .86): the mean is anime
-    # (.982 + .000 + .862) / 3 = .615.
-    less_sure = "anime-04-seaside-railway.jpg"
+    # As above, the last frame one `style` is less sure of (the small synthetic one, anime .85): the mean is anime
+    # (1.000 + .007 + .848) / 3 = .618.
+    less_sure = "tiny.jpg"
     path = sheet(config, [(ANIME, (0, 0), 1.0), (LIVE_ACTION, (650, 0), 2.0), (less_sure, (1300, 0), 3.0)])
 
     result = classify(config, path, minConfidence=0.9)
 
     assert result["tag"] == "uncertain"
-    assert result["confidence"] == pytest.approx(0.615, abs=0.02)
+    assert result["confidence"] == pytest.approx(0.618, abs=0.02)
     assert result["confidence"] == result["scores"]["anime"]
     assert result["agreement"] == pytest.approx(2 / 3)
-    # Each frame is held to the same threshold: the first two (.98) reach it, the last one's .86 not.
+    # Each frame is held to the same threshold: the first two (1.00 and .93) reach it, the last one's .85 not.
     assert [frame["tag"] for frame in result["frames"]] == ["anime", "live_action", "uncertain"]
 
 

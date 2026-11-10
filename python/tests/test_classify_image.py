@@ -12,12 +12,12 @@ from image_tags.worker import CPU_UNITS, ClassifyFrames, ClassifyImage
 from tests.conftest import FIXTURES, IMAGES, Pool, Task, run, served
 
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text(encoding="utf-8"))
-#: Reference frames (see `fixtures/images/CREDITS.md`): one every classifier gets right with room to spare, a live-action
-#: one, and one `style` cannot decide (anime_classification calls it not a painting, and of the painted kinds puts
-#: 3d a little over the anime ones).
+#: Reference frames (see `fixtures/images/CREDITS.md`): one every classifier gets right with room to spare, a
+#: live-action one, and one `style` is torn on (a CG film: anime_real fairly sure it is real, anime_classification of
+#: the painted kinds sure it is 3d).
 ANIME = IMAGES / "anime-02-train-window.jpg"
 LIVE_ACTION = IMAGES / "live_action-02-bristol-street.jpg"
-UNDECIDED = IMAGES / "anime-05-bakery-interior.jpg"
+TORN = IMAGES / "cg-02-sintel.jpg"
 
 
 def classify(config, path, **settings):
@@ -32,7 +32,7 @@ def test_tells_anime_cg_or_live_action_by_default(hub, config):
     assert result["labels"] == ["anime", "cg", "live_action"]
     assert result["tag"] == "anime"
     assert result["confidence"] == result["scores"]["anime"]
-    assert result["confidence"] >= 0.6
+    assert result["confidence"] >= 0.55
     assert sum(result["scores"].values()) == pytest.approx(1, abs=1e-5)
     assert result["models"] == ["anime_real", "anime_classification"]
     assert "warnings" not in result
@@ -45,6 +45,7 @@ def test_tells_anime_cg_or_live_action_by_default(hub, config):
         "anime-02-train-window.jpg",
         "anime-03-festival-night-market.jpg",
         "anime-04-seaside-railway.jpg",
+        "anime-05-bakery-interior.jpg",
         "anime-06-riverside-picnic.jpg",
         "anime-07-yakitori-stall-portrait.jpg",
         "live_action-01-office-interview.jpg",
@@ -55,26 +56,27 @@ def test_tells_anime_cg_or_live_action_by_default(hub, config):
     ],
 )
 def test_style_tags_a_clear_reference_frame_as_its_category(hub, config, image):
-    # The CG films are left out: `style` takes most of them for live action (a known weakness of the models).
+    # The CG films are left out: `style` takes some of them for live action (a known weakness of the models).
     result = classify(config, IMAGES / image)
 
     assert result["tag"] == image.split("-")[0]
 
 
 def test_style_is_its_rule_over_both_models_scores(hub, config):
-    # The undecided frame's golden scores, through the rule by hand: what is not real, shared by the four painted
-    # kinds. anime_classification is .87 sure it is not a painting, so the sharing out is most of the answer.
-    real = GOLDEN["anime_real"][UNDECIDED.name]["real"]
-    kinds = GOLDEN["anime_classification"][UNDECIDED.name]
+    # A frame that gets some of all three: its golden scores through the rule by hand. Live action is real^4; what is
+    # not, shared by the four painted kinds (3d .58, illustration .41).
+    frame = IMAGES / "cg-03-elephants-dream.jpg"
+    live = GOLDEN["anime_real"][frame.name]["real"] ** 4
+    kinds = GOLDEN["anime_classification"][frame.name]
     painted = kinds["3d"] + kinds["bangumi"] + kinds["comic"] + kinds["illustration"]
 
-    result = classify(config, UNDECIDED, classifier="style")
+    result = classify(config, frame, classifier="style")
 
     assert result["scores"] == pytest.approx(
         {
-            "live_action": real,
-            "cg": (1 - real) * kinds["3d"] / painted,
-            "anime": (1 - real) * (kinds["bangumi"] + kinds["comic"] + kinds["illustration"]) / painted,
+            "live_action": live,
+            "cg": (1 - live) * kinds["3d"] / painted,
+            "anime": (1 - live) * (kinds["bangumi"] + kinds["comic"] + kinds["illustration"]) / painted,
         },
         abs=0.02,
     )
@@ -93,31 +95,24 @@ def test_each_model_is_a_classifier_with_its_own_labels(hub, config, model):
 
 
 def test_a_raw_model_answers_its_top_label_however_low(hub, config):
-    # anime_classification is torn on this illustration-like portrait: not_painting .54, illustration .45. Below what
-    # `style` asks for, but a raw model asks for nothing.
-    result = classify(config, IMAGES / "anime-07-yakitori-stall-portrait.jpg", classifier="anime_classification")
+    # anime_classification is torn on this frame: bangumi .51, illustration .38. Below what `style` asks for, but a
+    # raw model asks for nothing.
+    result = classify(config, IMAGES / "anime-04-seaside-railway.jpg", classifier="anime_classification")
 
-    assert result["confidence"] < 0.6
-    assert result["tag"] == "not_painting"
-
-
-def test_a_frame_style_cannot_decide_is_uncertain_and_keeps_its_scores(hub, config):
-    # Not real (.02), but anime_classification shares the rest about evenly: cg .51, anime .47.
-    result = classify(config, UNDECIDED)
-
-    assert result["tag"] == "uncertain"
-    assert result["confidence"] == max(result["scores"].values())
-    assert result["confidence"] < 0.6
-    assert result["scores"]["live_action"] < 0.05
-    assert result["labels"] == ["anime", "cg", "live_action"]
+    assert result["confidence"] < 0.55
+    assert result["tag"] == "bangumi"
 
 
 def test_a_top_score_below_min_confidence_is_uncertain_and_keeps_its_scores(hub, config):
-    sure = classify(config, ANIME)
+    # No reference frame is uncertain under `style`'s own threshold; this one is torn: anime_real is .79 sure it is
+    # real (.39 live action), anime_classification sure the rest is 3d: cg .60, just over the default.
+    sure = classify(config, TORN)
 
-    result = classify(config, ANIME, minConfidence=0.99)
+    result = classify(config, TORN, minConfidence=0.7)
 
-    assert sure["tag"] == "anime"
+    assert sure["tag"] == "cg"
+    assert 0.55 <= sure["confidence"] < 0.7
+    assert 0.3 < sure["scores"]["live_action"] < 0.5
     assert result["tag"] == "uncertain"
     assert result["confidence"] == sure["confidence"]
     assert result["scores"] == sure["scores"]

@@ -113,13 +113,14 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 - v1 entries:
   - `anime_real`: `deepghs/anime_real_cls` @ `097a6c1e9e62866a435810c883a45a7cb2c7077d`, `mobilenetv3_v1.4_dist`.
   - `anime_classification`: `deepghs/anime_classification` @ `5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df`,
-    `mobilenetv3_v1.3_dist` (provisional: the eval set decides between v1.3 and imgutils' default v1.5).
-  - `style` (preset, default classifier): labels `anime`, `cg`, `live_action`; default `minConfidence` 0.6
-    (provisional until the eval set). Per frame, from `anime_real`'s `p_real` and `anime_classification`'s scores
-    with `not_painting` dropped and the other four renormalised:
-    - `live_action = p_real`
-    - `cg = (1 − p_real) · p_3d`
-    - `anime = (1 − p_real) · (p_bangumi + p_illustration + p_comic)`
+    `mobilenetv3_v1.5_dist` (imgutils' default; the eval set chose it over v1.3: it finds more anime).
+  - `style` (preset, default classifier): labels `anime`, `cg`, `live_action`; default `minConfidence` 0.55 (settled
+    by the eval set). Per frame, from `anime_real`'s `p_real` and `anime_classification`'s scores with `not_painting`
+    dropped and the other four renormalised:
+    - `live_action = p_real⁴` (only a very sure `p_real` counts: the eval's `real_pow4`)
+    - `cg = (1 − p_real⁴) · p_3d`
+    - `anime = (1 − p_real⁴) · (1 − p_3d)`, i.e. the share of `bangumi`, `illustration` and `comic`
+    - When the four sum to less than 1e-6, `cg` and `anime` split `1 − p_real⁴` evenly.
 - Preprocessing is our own, matching imgutils' fallback (`_img_encode`; neither model ships a `preprocess.json`):
   RGB on white, bilinear resize to the model's input W×H ignoring aspect (384×384 if the input is dynamic),
   scale to [0, 1], `(x − 0.5) / 0.5`, float32 NCHW, input tensor `input`, output tensor `output`. The exact input
@@ -215,8 +216,9 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
   `python/scripts/eval.py` takes a CSV of `path,label` (the user's videos labelled anime, cg, live_action; 30 to 50
   each) and the `thumbs-collage` binary's path, makes a sheet per video with the README's recommended settings, runs
   `style` and the raw models, and prints confusion matrices, the time per video and the `minConfidence` that best
-  separates the classes. It decides the `anime_classification` version, `style`'s default `minConfidence`, and
-  whether `cg` needs another model.
+  separates the classes. It decided (2026-11-10) the `anime_classification` version (v1.5), `style`'s rule (live
+  action `p_real⁴`) and default `minConfidence` (0.55), and that `cg` needs another model (ticket 08); it keeps the
+  configuration before that (`previous`: `p_real`, v1.3, 0.6) to compare a later change against.
 
 ## Dependencies
 

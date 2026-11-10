@@ -17,7 +17,7 @@ export const CLASSIFIERS = {
     title: "Anime, CG or live action (anime_real and anime_classification)",
     labels: ["anime", "cg", "live_action"],
     models: ["anime_real", "anime_classification"],
-    minConfidence: 0.6,
+    minConfidence: 0.55,
   },
   anime_real: {
     kind: "model",
@@ -60,7 +60,7 @@ export const MODELS: Readonly<Record<string, ModelFile>> = {
   anime_classification: {
     repo: "deepghs/anime_classification",
     commit: "5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df",
-    name: "mobilenetv3_v1.3_dist",
+    name: "mobilenetv3_v1.5_dist",
     file: "model.onnx",
   },
 };
@@ -231,8 +231,8 @@ const outputSchema = {
       path: "D:/Pictures/street.jpg",
       ...STYLE_RESULT,
       tag: UNCERTAIN,
-      confidence: 0.55,
-      scores: { anime: 0.4, cg: 0.05, live_action: 0.55 },
+      confidence: 0.5,
+      scores: { anime: 0.45, cg: 0.05, live_action: 0.5 },
     },
   ],
 };
