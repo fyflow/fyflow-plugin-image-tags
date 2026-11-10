@@ -5,13 +5,24 @@ description = "The Python half of the image-tags Plugin: classifiers run with ON
 requires-python = ">=3.12"
 dependencies = [
   "numpy>=2.1",
-  "onnxruntime>=1.21",
   "pillow>=11",
 ]
+
+# ONNX Runtime's builds, one per variant (`plugin.ts`'s `python.variants`): the Host syncs the one its
+# `python.accelerator` names, else `cpu`. Each installs the `onnxruntime` module, so an environment holds one.
+[project.optional-dependencies]
+cpu = ["onnxruntime>=1.21"]
+# CUDA and cuDNN as pip packages, loaded by `onnxruntime.preload_dlls()`: no CUDA install on the machine, only a driver
+# that supports the wheel's CUDA major.
+cuda = ["onnxruntime-gpu[cuda,cudnn]>=1.21"]
+directml = ["onnxruntime-directml>=1.21"]
 
 [dependency-groups]
 # Not `dev`, which `uv sync` installs by default: the Host's environment gets none of it.
 test = ["pytest>=8"]
+
+[tool.uv]
+conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, { extra = "directml" }]]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

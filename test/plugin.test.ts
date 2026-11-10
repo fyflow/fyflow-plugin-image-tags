@@ -80,6 +80,8 @@ const pythonCatalogue = () => {
       [
         "run",
         "--quiet",
+        "--extra",
+        "cpu",
         "python",
         "-c",
         "import json; from image_tags.catalogue import CLASSIFIERS, MODELS, DEFAULT_CLASSIFIER as d; " +
@@ -103,6 +105,8 @@ const pythonWorker = () => {
       [
         "run",
         "--quiet",
+        "--extra",
+        "cpu",
         "python",
         "-c",
         "import json; from image_tags import worker as w; print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
@@ -138,6 +142,38 @@ describe("the Plugin's declarations", () => {
   it("has a Python project the Host can make an environment of", () => {
     expect(existsSync(join(project, "pyproject.toml"))).toBe(true);
     expect(existsSync(join(project, "uv.lock"))).toBe(true);
+  });
+
+  it("has a build of ONNX Runtime per accelerator, as conflicting extras, and none in the base", () => {
+    expect(plugin.python?.variants).toEqual({ cpu: ["cpu"], cuda: ["cuda"], directml: ["directml"] });
+    const { base, extras, conflicts } = JSON.parse(
+      execFileSync(
+        "uv",
+        [
+          "run",
+          "--quiet",
+          "--extra",
+          "cpu",
+          "python",
+          "-c",
+          "import json, tomllib; p = tomllib.load(open('pyproject.toml', 'rb')); " +
+            "print(json.dumps({'base': p['project']['dependencies'], " +
+            "'extras': p['project']['optional-dependencies'], 'conflicts': p['tool']['uv']['conflicts']}))",
+        ],
+        { cwd: project, encoding: "utf8" },
+      ),
+    ) as { base: string[]; extras: Record<string, string[]>; conflicts: { extra: string }[][] };
+    // One environment holds one build: each installs the `onnxruntime` module.
+    expect(base.filter((dependency) => dependency.startsWith("onnxruntime"))).toEqual([]);
+    const builds = Object.fromEntries(Object.entries(extras).map(([extra, [build = ""]]) => [extra, build]));
+    expect(builds).toEqual({
+      cpu: expect.stringMatching(/^onnxruntime>=/),
+      cuda: expect.stringMatching(/^onnxruntime-gpu\[cuda,cudnn\]>=/),
+      directml: expect.stringMatching(/^onnxruntime-directml>=/),
+    });
+    expect(conflicts.map((set) => set.map(({ extra }) => extra).sort())).toEqual([
+      ["cpu", "cuda", "directml"],
+    ]);
   });
 
   it("runs no Python Worker inline, as fyflow-app refuses", () => {

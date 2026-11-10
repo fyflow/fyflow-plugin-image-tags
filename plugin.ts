@@ -318,8 +318,10 @@ export default definePlugin({
   id: "fyflow-ext.image-tags",
   version: "0.1.0",
   base: import.meta.url,
-  // The Host makes the Plugin's Python environment from `python/uv.lock` with uv, at start and at each Reload.
-  python: { project: "./python" },
+  // The Host makes the Plugin's Python environment from `python/uv.lock` with uv, at start and at each Reload, with
+  // the extras of the variant its `python.accelerator` names (else `cpu`): each a build of ONNX Runtime
+  // (`pyproject.toml`), whose sessions run on the GPU the process holds when it has a GPU provider.
+  python: { project: "./python", variants: { cpu: ["cpu"], cuda: ["cuda"], directml: ["directml"] } },
   // Models are downloaded into it on first use: `<dataDir>/models/<repo>/<commit, 12 characters>/<name>/`.
   dataDir: true,
   profile: { schema: profileSchema, startup: ["modelDir", "batchSize"] },

@@ -7,6 +7,7 @@ import numpy as np
 from PIL import Image
 
 from .batcher import Batcher
+from .devices import device_of
 from .catalogue import CLASSIFIERS, DEFAULT_CLASSIFIER, MODELS, Classifier, Model, answer
 from .frames import SHEET_AS_ONE_IMAGE, read_frames, sheet_of
 from .models import Cancelled, Models
@@ -36,7 +37,13 @@ class _Classify:
         # Profile start-up fields: `modelDir`, the folder of an offline machine's models (then nothing downloads), and
         # `batchSize`, the most frames in one forward pass.
         self.batch_size = config.get("batchSize") or DEFAULT_BATCH_SIZE
-        self.models = Models(config["host"]["dataDir"], model_dir=config.get("modelDir"), threads=_cpu_units(pool))
+        # On the GPU the process holds while it lives, when the variant's build has a GPU provider.
+        self.models = Models(
+            config["host"]["dataDir"],
+            model_dir=config.get("modelDir"),
+            threads=_cpu_units(pool),
+            device=device_of(pool),
+        )
 
     @staticmethod
     def _path(task) -> str:

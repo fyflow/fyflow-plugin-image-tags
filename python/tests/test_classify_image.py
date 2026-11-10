@@ -9,7 +9,7 @@ from image_tags.catalogue import MODELS
 from image_tags.models import Models
 from image_tags.preprocess import load_image, to_input
 from image_tags.worker import CPU_UNITS, ClassifyFrames, ClassifyImage
-from tests.conftest import FIXTURES, IMAGES, Task, run, served
+from tests.conftest import FIXTURES, IMAGES, Pool, Task, run, served
 
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text(encoding="utf-8"))
 #: Reference frames (see `fixtures/images/CREDITS.md`): one every classifier gets right with room to spare, a live-action
@@ -230,16 +230,6 @@ def test_a_missing_file_fails_naming_it(hub, config, tmp_path):
 def test_an_input_without_a_path_fails(hub, config):
     with pytest.raises(Exception, match="no `path`"):
         run(ClassifyImage(config), Task({}))
-
-
-class Pool:
-    """A Worker's pool as the shim builds it (`grants`), and as a Host might once it says what the process holds of
-    counting groups too (`holds`)."""
-
-    def __init__(self, grants=None, holds=None):
-        self.grants = grants or {}
-        if holds is not None:
-            self.holds = holds
 
 
 def forward_pass_threads(worker):

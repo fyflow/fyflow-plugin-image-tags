@@ -16,6 +16,7 @@ must be there already, in the same layout.
 
 import hashlib
 import os
+import sys
 import tempfile
 import threading
 import urllib.error
@@ -26,6 +27,7 @@ from pathlib import Path
 import numpy as np
 import onnxruntime as ort
 
+from . import devices
 from .catalogue import Model
 
 #: Where models come from: Hugging Face, or a mirror of it named the way `huggingface_hub` reads it.
@@ -193,17 +195,30 @@ class _Download:
 
 class Models:
     """The models of one Worker instance: their files under `data_dir` (or in `model_dir`, which is never downloaded
-    into), and one session each once loaded, running on `threads` threads."""
+    into), and one session each once loaded, running on GPU `device` when the installed ONNX Runtime build has a GPU
+    provider (`devices.py`), else on the CPU, on `threads` threads."""
 
-    def __init__(self, data_dir: str, endpoint: str | None = None, model_dir: str | None = None, threads: int = 0):
+    def __init__(
+        self,
+        data_dir: str,
+        endpoint: str | None = None,
+        model_dir: str | None = None,
+        threads: int = 0,
+        device: int = 0,
+    ):
         #: The threads a session spreads a forward pass over (onnxruntime's `intra_op_num_threads`; 0, its default:
         #: one per processor).
         self.threads = threads
+        #: The GPU the sessions run on, when the build has a GPU provider: the `gpu` unit the process holds.
+        self.device = device
         self.model_dir = Path(model_dir) if model_dir else None
         self.root = self.model_dir or Path(data_dir) / "models"
         self.endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
         self._sessions: dict[str, ort.InferenceSession] = {}
         self._session_lock = threading.Lock()
+        # One forward pass at a time in the process: the DirectML provider takes no concurrent `run` on a session, and
+        # on the CPU each pass already spreads over the threads of the units the process holds.
+        self._run_lock = threading.Lock()
         self._lock = threading.Lock()
         self._downloads: dict[str, _Download] = {}
 
@@ -220,15 +235,23 @@ class Models:
         with self._session_lock:
             session = self._sessions.get(model.id)
             if session is None:
-                options = ort.SessionOptions()
-                options.intra_op_num_threads = self.threads
-                session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
+                chosen = devices.providers(ort.get_available_providers(), self.device)
+                devices.prepare(chosen)
+                session = ort.InferenceSession(
+                    str(path),
+                    devices.session_options(chosen, self.threads),
+                    providers=[name for name, _ in chosen],
+                    provider_options=[options for _, options in chosen],
+                )
                 self._sessions[model.id] = session
+                _say_where(model, session, chosen, self.device)
             return session
 
     def scores(self, model: Model, batch: np.ndarray, ctx=None) -> np.ndarray:
         """Each image's label probabilities, `[n, len(labels)]`: the models end in a softmax."""
-        (output,) = self.session(model, ctx).run(["output"], {"input": batch})
+        session = self.session(model, ctx)
+        with self._run_lock:
+            (output,) = session.run(["output"], {"input": batch})
         return output
 
     def _file(self, model: Model, ctx) -> Path:
@@ -258,3 +281,18 @@ class Models:
         # Under the lock. An abandoned download may end after a new one has taken its place.
         if self._downloads.get(model.id) is fetching:
             del self._downloads[model.id]
+
+
+def _say_where(model: Model, session: ort.InferenceSession, chosen: devices.Providers, device: int) -> None:
+    """A line on stderr (the Host's log, and the Plugins page's "Python output") naming the provider the session runs
+    on, and saying so when it is not the GPU provider the build offered (one that could not start: onnxruntime falls
+    back to the CPU)."""
+    running = session.get_providers()[0]
+    line = f"image-tags: the model {model.id} runs on {running}"
+    if running != devices.CPU:
+        line += f" (gpu unit {device}: {', '.join(f'{key}={value}' for key, value in chosen[0][1].items())})"
+    wanted = chosen[0][0]
+    if running != wanted:
+        line += f", not {wanted}: it could not start"
+    line += f"; onnxruntime {ort.__version__}, {session.get_session_options().intra_op_num_threads} threads"
+    print(line, file=sys.stderr, flush=True)

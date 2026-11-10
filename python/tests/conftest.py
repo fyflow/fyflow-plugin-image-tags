@@ -32,6 +32,16 @@ class Task:
         self.settings = {"profile": {}, **(settings or {})}
 
 
+class Pool:
+    """A Worker's pool as the shim builds it (`grants`), and as a Host might once it says what the process holds of
+    counting groups too (`holds`)."""
+
+    def __init__(self, grants=None, holds=None):
+        self.grants = grants or {}
+        if holds is not None:
+            self.holds = holds
+
+
 class Context:
     """A Task's context as the shim makes it, recording what `run` says."""
 

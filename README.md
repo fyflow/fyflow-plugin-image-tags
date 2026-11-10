@@ -97,6 +97,32 @@ alternating between them. A Profile can change the idle time (`idleTimeout`) for
 The 4 is the Plugin's: fyflow-app does not yet let a Profile change what a pool holds while it lives, nor tell the
 Worker how many `cpu` units it holds. When it does (`pool.holds`), the Worker takes its thread count from there.
 
+### On a GPU
+
+The Plugin runs on the CPU unless the Host's **`python.accelerator`** says otherwise: `cuda` (NVIDIA) or `directml`
+(any DirectX 12 GPU on Windows). Set it in `fyflow.config.json`, `{ "python": { "accelerator": "cuda" } }`, or with
+`FYFLOW_PYTHON_ACCELERATOR=cuda` in the Host's environment, then restart the Host; nothing is detected for you. The
+Host then makes the Plugin's Python environment with that variant's build of ONNX Runtime (`pyproject.toml`'s extras):
+
+| Variant | Installs | Needs |
+| --- | --- | --- |
+| `cpu` (default) | `onnxruntime` | nothing |
+| `cuda` | `onnxruntime-gpu` with CUDA and cuDNN as pip packages (about 2 GB installed) | an NVIDIA driver that supports CUDA 13; no CUDA install |
+| `directml` | `onnxruntime-directml` (about 100 MB installed) | Windows with a DirectX 12 GPU |
+
+The Plugins page shows the variant on the Plugin's Python line once its environment is Ready. Each Worker process
+says on its "Python output" where each model's session runs, e.g. `image-tags: the model anime_real runs on
+CUDAExecutionProvider (gpu unit 0: device_id=0)`; a GPU provider that cannot start (a driver too old) falls back to the
+CPU, and the line says so.
+
+The GPU a process uses is the unit of the Host's `gpu` group it holds. That group has 1 unit unless its number is set
+on the Resource Groups page, which a Host with more GPUs needs: unit `n` is CUDA's device `n`. DirectML numbers
+adapters otherwise (a laptop's integrated GPU first), so with `directml` unit 0 is the fastest GPU Windows reports,
+and unit `n` above 0 is DirectML's adapter `n`.
+
+With one `gpu` unit, `ClassifyImage` and `ClassifyFrames` take turns on the GPU, as above; on the `cpu` variant they
+take the same turns, holding a unit they do not use. Set [`batchSize`](#batchsize) for the GPU's memory.
+
 ### `batchSize`
 
 A Profile start-up field (read when a Worker starts, so it takes effect at the next Reload): the most frames in one
