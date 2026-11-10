@@ -1,0 +1,19 @@
+[project]
+name = "image-tags"
+version = "0.1.0"
+description = "The Python half of the image-tags Plugin: classifiers run with ONNX Runtime"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy>=2.1",
+  "onnxruntime>=1.21",
+  "pillow>=11",
+]
+
+[dependency-groups]
+# Not `dev`, which `uv sync` installs by default: the Host's environment gets none of it.
+test = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# As the Host runs it: the project folder on the path, never installed.
+pythonpath = ["."]

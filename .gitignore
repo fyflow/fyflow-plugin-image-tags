@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.tsbuild/
+*.log
+__pycache__/
+.venv/
+.pytest_cache/
+# Models fetched for the tests, from their pinned commits.
+python/.cache/

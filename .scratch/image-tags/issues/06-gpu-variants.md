@@ -7,6 +7,7 @@
 **Status:** ready-for-agent
 
 - [ ] `variants` as conflicting extras: `cpu` → `onnxruntime`, `cuda` → `onnxruntime-gpu[cuda,cudnn]`, `directml` → `onnxruntime-directml`.
+- [ ] `onnxruntime` moves out of the base dependencies into the `cpu` extra (ticket 01 put it in the base): otherwise it is installed beside `onnxruntime-gpu` or `onnxruntime-directml` and the two clash.
 - [ ] `cuda`: `onnxruntime.preload_dlls()` before the first session; no system CUDA install needed.
 - [ ] Device from `pool.grants["gpu"][0]`, passed as the provider's `device_id`.
 - [ ] Both Node Types' pools: `residentGroups: ["gpu"]`, `idleTimeout: 15_000`.
