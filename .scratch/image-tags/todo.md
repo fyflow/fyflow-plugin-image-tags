@@ -13,6 +13,11 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
   - Choose the variant per Profile instead of per Host. fyflow-app already keeps one environment per (Plugin, variant, lock) (`packages/runtime/src/python-envs.ts`). It would have to sync each variant some Profile uses, and start each pool's process from its Profile's environment.
   - A Plugin would also need resident holds per variant: on `cpu`, `{ cpu: n }` only; on `cuda`, `{ gpu: 1, cpu: n }`. That would also remove the "the `gpu` unit is held on the cpu variant" caveat.
 - **Cost of Way 2:** disk and first-sync time. The CUDA environment is about 2 GB.
+- **Chosen direction:** Way 2, with the Plugin picking its own build. This is written up in `fyflow-app-request-plugin-picked-builds.md`:
+  - a `pickVariant` hook, with SDK helpers such as `hasNvidiaDriver()`;
+  - a per-Profile override of the build;
+  - resident holds per build;
+  - `python.accelerator` dropped, or kept only as an override.
 
 ## ClassifyImage and ClassifyFrames take turns on one GPU
 
@@ -28,4 +33,4 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
 
 - **A flaky test:** `test_after_a_cancelled_download_the_next_task_downloads_again` failed once during ticket 06's runs and passed on every rerun since.
 - **The frame-sheet contract:** the thumbnails repo (`fyflow-plugin-video-thumbnails`) should type and test `rect`, `video` and `config.render_timestamps`. It hasn't been filed, because that repo has no tracker set up.
-- **The fyflow-app request:** `fyflow-app-request-resident-units.md` hasn't been sent yet.
+- **The fyflow-app requests:** `fyflow-app-request-resident-units.md` and `fyflow-app-request-plugin-picked-builds.md` haven't been sent yet.
