@@ -4,7 +4,7 @@ import pytest
 
 from image_tags.catalogue import MODELS
 from image_tags.worker import ClassifyImage
-from tests.conftest import IMAGES, Context, Running, Task, served, wait_until
+from tests.conftest import IMAGES, Running, Task, run, served, wait_until
 
 MODEL = MODELS["anime_real"]
 MODEL_URL = f"/{MODEL.remote_path}"
@@ -92,7 +92,7 @@ def test_after_a_cancelled_download_the_next_task_downloads_again(hub, config):
 
     hub.release()
 
-    assert worker.run(image_task(), Context())["tag"] == "anime"
+    assert run(worker, image_task())["tag"] == "anime"
     assert hub.requests == [MODEL_URL, MODEL_URL]
 
 
@@ -118,7 +118,7 @@ def test_a_model_dir_is_used_and_nothing_is_downloaded(hub, config, model_dir, d
     config["modelDir"] = str(model_dir)
 
     # `style`, which needs both models.
-    result = ClassifyImage(config).run(image_task("style"), Context())
+    result = run(ClassifyImage(config), image_task("style"))
 
     assert result["tag"] == "anime"
     assert result["models"] == ["anime_real", "anime_classification"]
@@ -131,7 +131,7 @@ def test_a_model_missing_from_the_model_dir_fails_naming_the_folder_and_download
     config["modelDir"] = str(model_dir)
 
     with pytest.raises(Exception, match=r"^Could not get the model anime_real: ") as failure:
-        ClassifyImage(config).run(image_task(), Context())
+        run(ClassifyImage(config), image_task())
 
     assert str(model_dir) in str(failure.value)
     assert str(model_dir / MODEL.local_path) in str(failure.value)
@@ -144,5 +144,5 @@ def test_a_model_in_the_model_dir_other_than_the_pinned_one_fails_the_task(hub, 
     config["modelDir"] = str(model_dir)
 
     with pytest.raises(Exception, match=r"^Could not get the model anime_real: .*sha256"):
-        ClassifyImage(config).run(image_task(), Context())
+        run(ClassifyImage(config), image_task())
     assert hub.requests == []

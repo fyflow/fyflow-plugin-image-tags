@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from image_tags.worker import ClassifyFrames, ClassifyImage
-from tests.conftest import FIXTURES, IMAGES, Context, Task
+from tests.conftest import FIXTURES, IMAGES, Context, Task, run
 
 SHEETS = FIXTURES / "sheets"
 #: `sample.jpg`: what `VideoThumbnail` made of its test clip (`pnpm sheets`): a 3x3 grid of 160x90 cells, 7 frames
@@ -51,7 +51,7 @@ def sheet(config, cells, render_timestamps=False, video="D:/Videos/clip.mp4", na
 
 
 def classify(config, path, ctx=None, **settings):
-    return ClassifyFrames(config).run(Task({"path": str(path)}, settings), ctx or Context())
+    return run(ClassifyFrames(config), Task({"path": str(path)}, settings), ctx)
 
 
 def test_a_frame_sheet_is_classified_frame_by_frame_with_its_timestamps_and_video(hub, config):
@@ -93,7 +93,7 @@ def test_the_sample_sheet_s_frames_score_as_its_cells_cut_out_by_hand(hub, confi
     result = classify(config, SHEETS / "sample.jpg")
 
     worker = ClassifyImage(config)
-    alone = [worker.run(Task({"path": str(cell)}), Context())["scores"] for cell in cells]
+    alone = [run(worker, Task({"path": str(cell)}))["scores"] for cell in cells]
     assert [frame["scores"] for frame in result["frames"]] == [pytest.approx(scores, abs=1e-4) for scores in alone]
 
 
@@ -216,16 +216,30 @@ def classified(ctx):
     return [(fraction, message) for fraction, message in ctx.progress_reports if message.startswith("Classified")]
 
 
-def test_frames_run_in_batches_of_32_reporting_progress_after_each(hub, config, tmp_path):
+def test_frames_run_in_batches_of_16_reporting_progress_after_each(hub, config, tmp_path):
     ctx = Context()
 
-    result = classify(config, frames_folder(tmp_path, 70), ctx, classifier="anime_real")
+    result = classify(config, frames_folder(tmp_path, 35), ctx, classifier="anime_real")
 
-    assert len(result["frames"]) == 70
+    assert len(result["frames"]) == 35
     assert classified(ctx) == [
-        (32 / 70, "Classified 32 of 70 frames"),
-        (64 / 70, "Classified 64 of 70 frames"),
-        (1.0, "Classified 70 of 70 frames"),
+        (16 / 35, "Classified 16 of 35 frames"),
+        (32 / 35, "Classified 32 of 35 frames"),
+        (1.0, "Classified 35 of 35 frames"),
+    ]
+
+
+def test_the_profile_s_batch_size_sets_how_many_frames_run_at_once(hub, config, tmp_path):
+    config["batchSize"] = 4
+    ctx = Context()
+
+    result = classify(config, frames_folder(tmp_path, 10), ctx, classifier="anime_real")
+
+    assert len(result["frames"]) == 10
+    assert [message for _, message in classified(ctx)] == [
+        "Classified 4 of 10 frames",
+        "Classified 8 of 10 frames",
+        "Classified 10 of 10 frames",
     ]
 
 
@@ -238,14 +252,14 @@ def test_a_cancel_stops_the_task_before_its_next_batch(hub, config, tmp_path):
 
     ctx = CancelledAfterOneBatch()
 
-    with pytest.raises(Exception, match="Cancelled after 32 of 70 frames"):
-        classify(config, frames_folder(tmp_path, 70), ctx, classifier="anime_real")
+    with pytest.raises(Exception, match="Cancelled after 16 of 35 frames"):
+        classify(config, frames_folder(tmp_path, 35), ctx, classifier="anime_real")
 
     assert len(classified(ctx)) == 1
 
 
 def test_classify_image_scores_a_frame_sheet_as_one_image_with_a_warning(hub, config):
-    result = ClassifyImage(config).run(Task({"path": str(SHEETS / "sample.jpg")}), Context())
+    result = run(ClassifyImage(config), Task({"path": str(SHEETS / "sample.jpg")}))
 
     assert result["video"] == "sample.mp4"
     assert "frames" not in result

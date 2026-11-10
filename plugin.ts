@@ -3,7 +3,7 @@
 // environment of.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { CPU_GROUP, definePlugin, type PluginStatus } from "fyflow-plugin-sdk";
+import { CPU_GROUP, definePlugin, GPU_GROUP, type PluginStatus } from "fyflow-plugin-sdk";
 
 /**
  * What a Node's `classifier` setting may name, as `python/image_tags/catalogue.py` has it (`CLASSIFIERS`; a test holds
@@ -120,7 +120,18 @@ const settingsSchema = {
   additionalProperties: false,
 };
 
-// The Profile's fields. `modelDir` is a start-up field: the Worker reads it once, when its process starts.
+/** The most frames in one forward pass when a Profile sets no `batchSize` (`DEFAULT_BATCH_SIZE` in `worker.py`). */
+export const DEFAULT_BATCH_SIZE = 16;
+
+/**
+ * What each process holds while it lives, not each Task: Tasks waiting on a shared forward pass use no processor, and
+ * a pass runs on as many threads as the `cpu` units held (`CPU_UNITS` in `worker.py`). The `gpu` unit is held on the
+ * `cpu` variant too: a pool cannot change by variant. Until a Profile can set these counts, they are the Plugin's.
+ */
+export const RESIDENT_GROUPS = { [GPU_GROUP]: 1, [CPU_GROUP]: 4 };
+
+// The Profile's fields. `modelDir` and `batchSize` are start-up fields: the Worker reads them once, when its process
+// starts.
 const profileSchema = {
   type: "object",
   properties: {
@@ -130,6 +141,14 @@ const profileSchema = {
         "For a machine without internet: an absolute folder holding the models, laid out as the data directory's " +
         "`models` folder (<repo>/<commit, 12 characters>/<name>/model.onnx; see the README). When set, nothing is " +
         "downloaded, and a Task whose model is not there fails. Takes effect at the next Reload.",
+    },
+    batchSize: {
+      type: "integer",
+      minimum: 1,
+      description:
+        `The most frames in one forward pass; left empty, ${DEFAULT_BATCH_SIZE}. For a GPU, where the best size ` +
+        "depends on its memory. ClassifyImage batches the images of the Tasks running at once, so a higher size " +
+        "only helps with a maxConcurrentTasks at least as high. Takes effect at the next Reload.",
     },
   },
   additionalProperties: false,
@@ -303,7 +322,7 @@ export default definePlugin({
   python: { project: "./python" },
   // Models are downloaded into it on first use: `<dataDir>/models/<repo>/<commit, 12 characters>/<name>/`.
   dataDir: true,
-  profile: { schema: profileSchema, startup: ["modelDir"] },
+  profile: { schema: profileSchema, startup: ["modelDir", "batchSize"] },
   // Asked every few seconds while the Plugins page is open: a check that each model's file exists, nothing slower.
   status: ({ dataDir }) => modelsStatus(dataDir),
   workers: {
@@ -323,22 +342,22 @@ export default definePlugin({
   nodeTypes: {
     ClassifyImage: {
       worker: "classifyImage",
-      profile: ["modelDir"],
-      // One Python process per Profile, holding each model's session once; up to four Tasks at once on threads of
-      // its own, sharing those sessions. Stopped after 60 s with no Task, which frees the models' memory.
-      pool: { maxThreads: 1, maxConcurrentTasks: 4, idleTimeout: 60_000 },
-      // A forward pass keeps a processor busy.
-      groups: [CPU_GROUP],
+      profile: ["modelDir", "batchSize"],
+      // One Python process per Profile, holding each model's session once and its resident units; up to 32 Tasks at
+      // once on its event loop (`TASKS_AT_ONCE` in `worker.py`), whose images go through each model together, up to
+      // `batchSize` to a forward pass, a batch waiting at most 20 ms for more. Stopped after 5 s with no Task, which
+      // frees the models' memory and the units, so another pool can have the GPU soon.
+      pool: { maxThreads: 1, maxConcurrentTasks: 32, idleTimeout: 5_000, residentGroups: RESIDENT_GROUPS },
       icon: "tag",
       description: "Tells what one image is (anime, CG or live action, …) with local classifiers.",
     },
     ClassifyFrames: {
       worker: "classifyFrames",
-      profile: ["modelDir"],
-      // One Python process per Profile; two Tasks at once, so that one Task's decoding and cutting out of frames
-      // overlaps the other's forward passes. A Task runs its frames through the models 32 at a time.
-      pool: { maxThreads: 1, maxConcurrentTasks: 2, idleTimeout: 60_000 },
-      groups: [CPU_GROUP],
+      profile: ["modelDir", "batchSize"],
+      // One Python process per Profile, holding its resident units; two Tasks at once, so that one Task's decoding
+      // and cutting out of frames overlaps the other's forward passes. A Task runs its frames through the models
+      // `batchSize` at a time.
+      pool: { maxThreads: 1, maxConcurrentTasks: 2, idleTimeout: 5_000, residentGroups: RESIDENT_GROUPS },
       icon: "image",
       description:
         "Tells what a whole video is (anime, CG or live action, …) from its VideoThumbnail frame sheet, or a folder of frames.",

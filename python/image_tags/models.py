@@ -5,8 +5,10 @@ checked against its sha256, then renamed into `<dataDir>/models/<repo>/<commit, 
 half-written or unpinned file is never loaded, and two processes fetching at once cannot spoil each other's.
 
 Within one process, the Tasks that need a model at once share one download, run on a thread of its own: a cancelled
-Task (the shim raises `KeyboardInterrupt` in its thread) stops waiting at once without tearing the download from under
-the others, and the download stops, its temp file gone, once no Task waits on it any more.
+Task stops waiting at once without tearing the download from under the others (a `ClassifyFrames` Task gets the
+shim's `KeyboardInterrupt` in its thread; a `ClassifyImage` Task's coroutine is cancelled, and the thread it waits on
+sees `ctx.cancelled` within `POLL_SECONDS`), and the download stops, its temp file gone, once no Task waits on it any
+more.
 
 With a model folder (the Profile's `modelDir`), for a machine without internet, nothing is ever downloaded: the models
 must be there already, in the same layout.
@@ -191,9 +193,12 @@ class _Download:
 
 class Models:
     """The models of one Worker instance: their files under `data_dir` (or in `model_dir`, which is never downloaded
-    into), and one session each once loaded."""
+    into), and one session each once loaded, running on `threads` threads."""
 
-    def __init__(self, data_dir: str, endpoint: str | None = None, model_dir: str | None = None):
+    def __init__(self, data_dir: str, endpoint: str | None = None, model_dir: str | None = None, threads: int = 0):
+        #: The threads a session spreads a forward pass over (onnxruntime's `intra_op_num_threads`; 0, its default:
+        #: one per processor).
+        self.threads = threads
         self.model_dir = Path(model_dir) if model_dir else None
         self.root = self.model_dir or Path(data_dir) / "models"
         self.endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
@@ -215,7 +220,9 @@ class Models:
         with self._session_lock:
             session = self._sessions.get(model.id)
             if session is None:
-                session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+                options = ort.SessionOptions()
+                options.intra_op_num_threads = self.threads
+                session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
                 self._sessions[model.id] = session
             return session
 

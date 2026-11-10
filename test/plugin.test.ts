@@ -15,9 +15,16 @@ import {
   validateDefinition,
 } from "fyflow-orchestration";
 import { createRuntime } from "fyflow-orchestration/scheduler";
-import { CPU_GROUP, type PluginNodeType } from "fyflow-plugin-sdk";
+import { CPU_GROUP, GPU_GROUP, type PluginNodeType } from "fyflow-plugin-sdk";
 import { afterEach, describe, expect, it } from "vitest";
-import plugin, { CLASSIFIERS, DEFAULT_CLASSIFIER, localPathOf, MODELS } from "../plugin.ts";
+import plugin, {
+  CLASSIFIERS,
+  DEFAULT_BATCH_SIZE,
+  DEFAULT_CLASSIFIER,
+  localPathOf,
+  MODELS,
+  RESIDENT_GROUPS,
+} from "../plugin.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const project = join(root, "python");
@@ -44,8 +51,11 @@ const registry = (): RegistryDocument => ({
       ],
     ),
   ),
-  // The `cpu` group its Node Types name, as the Host's built-in Plugin declares it.
-  groups: { [CPU_GROUP]: { type: "ConcurrentLimitGroup", config: { limit: availableParallelism() } } },
+  // The `cpu` and `gpu` groups its Node Types hold, as the Host's built-in Plugin declares them.
+  groups: {
+    [CPU_GROUP]: { type: "ConcurrentLimitGroup", config: { limit: availableParallelism() } },
+    [GPU_GROUP]: { type: "UnitGroup", config: { units: 1 } },
+  },
 });
 
 /** The Plugin's Node Types: one image per Task, and a sheet or folder of frames per Task. */
@@ -82,6 +92,26 @@ const pythonCatalogue = () => {
     ),
   );
   return catalogue as { default: string; classifiers: unknown; models: unknown };
+};
+
+/** The Python Worker's constants that the declarations repeat (asked once). */
+let workerConstants: { tasksAtOnce: number; cpuUnits: number; defaultBatchSize: number } | undefined;
+const pythonWorker = () => {
+  workerConstants ??= JSON.parse(
+    execFileSync(
+      "uv",
+      [
+        "run",
+        "--quiet",
+        "python",
+        "-c",
+        "import json; from image_tags import worker as w; print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
+          "'cpuUnits': w.CPU_UNITS, 'defaultBatchSize': w.DEFAULT_BATCH_SIZE}))",
+      ],
+      { cwd: project, encoding: "utf8" },
+    ),
+  );
+  return workerConstants as { tasksAtOnce: number; cpuUnits: number; defaultBatchSize: number };
 };
 
 const findingsOf = (flow: FlowDefinition) => {
@@ -160,6 +190,40 @@ describe("the Plugin's declarations", () => {
       for (const label of labels) expect(description).toContain(label);
     }
     expect(description).toContain("uncertain");
+  });
+
+  it("runs ClassifyImage 32 Tasks at a time in one process, as many as its Worker makes room for", () => {
+    const image = plugin.nodeTypes?.ClassifyImage;
+    expect(image?.worker).toBe("classifyImage");
+    expect(image?.pool).toMatchObject({ maxThreads: 1, maxConcurrentTasks: 32 });
+    expect(pythonWorker().tasksAtOnce).toBe(image?.pool?.maxConcurrentTasks);
+  });
+
+  it.each(NODE_TYPES)(
+    "holds a GPU and 4 processors per %s process, while it lives, and nothing per Task",
+    (type) => {
+      const nodeType = plugin.nodeTypes?.[type];
+      expect(nodeType?.groups ?? []).toEqual([]);
+      expect(nodeType?.pool).toMatchObject({
+        maxThreads: 1,
+        idleTimeout: 5_000,
+        residentGroups: { [GPU_GROUP]: 1, [CPU_GROUP]: 4 },
+      });
+      // The Worker runs a forward pass on as many threads as the cpu units it assumes it holds.
+      expect(pythonWorker().cpuUnits).toBe(RESIDENT_GROUPS[CPU_GROUP]);
+    },
+  );
+
+  it("lets a Profile set the most frames in a forward pass, read when a Worker starts, 16 by default", () => {
+    // fyflow's schema subset has no `default`: the description says it, and the Worker applies it.
+    const schema = plugin.profile?.schema as {
+      properties: Record<string, JsonSchema & { description?: string }>;
+    };
+    expect(schema.properties.batchSize).toMatchObject({ type: "integer", minimum: 1 });
+    expect(schema.properties.batchSize?.description).toContain(`left empty, ${DEFAULT_BATCH_SIZE}`);
+    expect(plugin.profile?.startup).toContain("batchSize");
+    for (const type of NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).toContain("batchSize");
+    expect(pythonWorker().defaultBatchSize).toBe(DEFAULT_BATCH_SIZE);
   });
 
   it("runs ClassifyFrames two Tasks at a time in one process, on a Worker of its own", () => {

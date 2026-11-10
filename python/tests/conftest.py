@@ -4,8 +4,10 @@ The models are fetched once from huggingface.co at their pinned commits into `py
 against the catalogue's sha256), then served from a local HTTP server that the Worker reaches through `HF_ENDPOINT`.
 """
 
+import asyncio
 import ctypes
 import http.server
+import inspect
 import shutil
 import threading
 import time
@@ -118,15 +120,38 @@ class Hub:
         self.server.server_close()
 
 
+_loop = None
+
+
+def event_loop():
+    """The event loop `async def run`s go on, as the shim's: one for the process, on a thread of its own."""
+    global _loop
+    if _loop is None:
+        _loop = asyncio.new_event_loop()
+        threading.Thread(target=_loop.run_forever, name="test-asyncio", daemon=True).start()
+    return _loop
+
+
+def run(worker, task, ctx=None, timeout=60):
+    """What `worker.run` gives for `task`, called as the shim calls it: an `async def run` on the shared event loop, a
+    plain one on a thread of its own."""
+    return Running(worker, task, ctx).result(timeout)
+
+
 class Running:
-    """A Task running on a thread of its own, as the shim runs a plain `def run`; `cancel()` does what the shim's
-    cancel does: it marks the context cancelled, then raises `KeyboardInterrupt` inside the Task's thread."""
+    """A Task running as the shim runs it: a plain `def run` on a thread of its own, an `async def run` on the shared
+    event loop. `cancel()` does what the shim's cancel does: it marks the context cancelled, then raises
+    `KeyboardInterrupt` inside the Task's thread, or cancels the Task's coroutine."""
 
     def __init__(self, worker, task, ctx=None):
         self.ctx = ctx or Context()
         self._outcome = None
-        self.thread = threading.Thread(target=self._run, args=(worker, task), daemon=True)
-        self.thread.start()
+        self.thread = self.future = None
+        if inspect.iscoroutinefunction(worker.run):
+            self.future = asyncio.run_coroutine_threadsafe(worker.run(task, self.ctx), event_loop())
+        else:
+            self.thread = threading.Thread(target=self._run, args=(worker, task), daemon=True)
+            self.thread.start()
 
     def _run(self, worker, task):
         try:
@@ -136,12 +161,20 @@ class Running:
 
     def cancel(self):
         self.ctx.cancelled = True
+        if self.future is not None:
+            self.future.cancel()
+            return
         ctypes.pythonapi.PyThreadState_SetAsyncExc(
             ctypes.c_ulong(self.thread.ident), ctypes.py_object(KeyboardInterrupt)
         )
 
     def result(self, timeout=30):
         """What `run` returned, or what it raised, raised again; fails if the Task is still running after `timeout`."""
+        if self.future is not None:
+            try:
+                return self.future.result(timeout)
+            except TimeoutError:
+                raise AssertionError(f"the Task is still running after {timeout} s") from None
         self.thread.join(timeout)
         assert not self.thread.is_alive(), f"the Task is still running after {timeout} s"
         result, error = self._outcome

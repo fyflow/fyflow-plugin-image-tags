@@ -35,6 +35,13 @@ conditions, `uncertain` included. A raw model's default is 0: it answers `uncert
 Given a frame sheet, it scores the whole collage as one image and adds a `warnings` entry: `ClassifyFrames` reads
 sheets.
 
+It is made for a Flow's `map` over many images. One process per Profile runs up to 32 Tasks at once, and the images
+of the Tasks running together go through each model in shared batches: a batch runs once it holds `batchSize` images
+(16 unless the Profile says otherwise), or 20 ms after its first one arrived, whichever comes first, and one batch of
+a model runs at a time (images arriving meanwhile wait for the next). Tasks with different classifiers share the batches of the models they have in common. Each Task
+reads its own image, so one that cannot be read fails alone; a model that cannot be had fails the Tasks that need it.
+A cancelled Task leaves its batch at once, and the other Tasks' results are untouched.
+
 ### `ClassifyFrames`
 
 A whole video per Task, from its frames: the same `classifier` and `minConfidence` settings, and `path` in its input
@@ -63,7 +70,8 @@ It hands on what `ClassifyImage` does, over all the frames, and more:
   the video) null for a folder or an image. A Flow can find mixed content in it (live action with anime inserts);
 - `video`: the video's path, as the sheet has it.
 
-Frames go through the models 32 at a time; the Task's progress moves on, and a Cancel is looked at, after each batch.
+Frames go through the models `batchSize` at a time (16 unless the Profile says otherwise); the Task's progress moves
+on, and a Cancel is looked at, after each batch.
 One process per Profile runs two Tasks at once, so one Task's decoding and cutting overlaps the other's inference.
 
 #### Recommended `VideoThumbnail` settings
@@ -75,6 +83,26 @@ One process per Profile runs two Tasks at once, so one Task's decoding and cutti
 | `fit` | `"stretch"` | What imgutils does: the whole frame squashed into the cell, no crop, no bars. |
 | `renderTimestamps` | `false` | Drawn timestamps sit on the frames the models see (a warning says so). |
 | `skipBlankFrames` | `true` | A black or white frame says nothing. |
+
+## Resources
+
+Both Node Types hold what they use per process, not per Task: while its process lives (and for 5 s after its last
+Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group, and a Task holds nothing of its own.
+Tasks waiting on a shared forward pass use no processor, and a forward pass runs on 4 threads. The `gpu` unit is held
+on the `cpu` variant too (a pool cannot change by variant), so with one GPU unit the two Node Types, and each Profile's
+pools, take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s
+more). That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks
+alternating between them. A Profile can change the idle time (`idleTimeout`) for either Node Type.
+
+The 4 is the Plugin's: fyflow-app does not yet let a Profile change what a pool holds while it lives, nor tell the
+Worker how many `cpu` units it holds. When it does (`pool.holds`), the Worker takes its thread count from there.
+
+### `batchSize`
+
+A Profile start-up field (read when a Worker starts, so it takes effect at the next Reload): the most frames in one
+forward pass, 16 if left empty. It is for the GPU, where the best size depends on the GPU's memory. Raising it on
+`ClassifyImage` helps only if that Profile's `maxConcurrentTasks` for `ClassifyImage` is at least as high, since a
+batch holds one image per Task running.
 
 ## Models
 

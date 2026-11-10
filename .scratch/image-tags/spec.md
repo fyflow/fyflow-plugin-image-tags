@@ -166,8 +166,8 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 
 - Both Node Types are Python Workers, so not `inline`. Pool on each Node Type:
   - `ClassifyFrames`: `maxThreads: 1`, `maxConcurrentTasks: 2` (one Task's decoding and cropping overlaps another's
-    inference), `residentGroups: ["gpu"]`, `idleTimeout: 15_000`.
-  - `ClassifyImage`: `maxThreads: 1`, `maxConcurrentTasks: 32`, `residentGroups: ["gpu"]`, `idleTimeout: 15_000`.
+    inference), `residentGroups: ["gpu"]`, `idleTimeout: 5_000`.
+  - `ClassifyImage`: `maxThreads: 1`, `maxConcurrentTasks: 32`, `residentGroups: ["gpu"]`, `idleTimeout: 5_000`.
 - Pools are per (Node Type, Profile), each its own Python process: each loads its own sessions (~17 MB per model)
   and holds its own `gpu` unit. With one unit, the two Node Types take turns on the GPU; the short `idleTimeout`
   keeps the wait short. The README says so.

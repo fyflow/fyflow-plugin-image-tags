@@ -8,8 +8,8 @@ import pytest
 from image_tags.catalogue import MODELS
 from image_tags.models import Models
 from image_tags.preprocess import load_image, to_input
-from image_tags.worker import ClassifyImage
-from tests.conftest import FIXTURES, IMAGES, Context, Task, served
+from image_tags.worker import CPU_UNITS, ClassifyFrames, ClassifyImage
+from tests.conftest import FIXTURES, IMAGES, Task, run, served
 
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text(encoding="utf-8"))
 #: Reference frames (see `fixtures/images/CREDITS.md`): one every classifier gets right with room to spare, a live-action
@@ -21,7 +21,7 @@ UNDECIDED = IMAGES / "anime-05-bakery-interior.jpg"
 
 
 def classify(config, path, **settings):
-    return ClassifyImage(config).run(Task({"path": str(path)}, settings), Context())
+    return run(ClassifyImage(config), Task({"path": str(path)}, settings))
 
 
 def test_tells_anime_cg_or_live_action_by_default(hub, config):
@@ -162,12 +162,12 @@ def test_images_scored_in_one_batch_score_as_they_do_alone(hub, data_dir, model)
 def test_the_models_are_downloaded_on_first_use_and_kept(hub, config, data_dir):
     worker = ClassifyImage(config)
 
-    worker.run(Task({"path": str(ANIME)}), Context())
-    worker.run(Task({"path": str(LIVE_ACTION)}), Context())
-    ClassifyImage(config).run(Task({"path": str(IMAGES / "tiny.jpg")}), Context())
+    run(worker, Task({"path": str(ANIME)}))
+    run(worker, Task({"path": str(LIVE_ACTION)}))
+    run(ClassifyImage(config), Task({"path": str(IMAGES / "tiny.jpg")}))
 
-    # The default classifier, `style`, needs both: each downloaded once, the first time.
-    assert hub.requests == [f"/{MODELS[id].remote_path}" for id in ("anime_real", "anime_classification")]
+    # The default classifier, `style`, needs both: each downloaded once, the first time (both at once).
+    assert sorted(hub.requests) == sorted(f"/{model.remote_path}" for model in MODELS.values())
     for model in MODELS.values():
         stored = data_dir / "models" / model.repo / model.commit[:12] / model.name / model.file
         assert stored.is_file()
@@ -205,11 +205,11 @@ def test_the_next_task_tries_the_download_again(hub, config):
     worker = ClassifyImage(config)
     task = Task({"path": str(ANIME)}, {"classifier": "anime_real"})
     with pytest.raises(Exception, match="Could not get the model"):
-        worker.run(task, Context())
+        run(worker, task)
 
     file.write_bytes(good)
 
-    assert worker.run(task, Context())["tag"] == "anime"
+    assert run(worker, task)["tag"] == "anime"
 
 
 def test_a_file_that_is_not_an_image_fails_naming_it(hub, config, tmp_path):
@@ -229,4 +229,29 @@ def test_a_missing_file_fails_naming_it(hub, config, tmp_path):
 
 def test_an_input_without_a_path_fails(hub, config):
     with pytest.raises(Exception, match="no `path`"):
-        ClassifyImage(config).run(Task({}), Context())
+        run(ClassifyImage(config), Task({}))
+
+
+class Pool:
+    """A Worker's pool as the shim builds it (`grants`), and as a Host might once it says what the process holds of
+    counting groups too (`holds`)."""
+
+    def __init__(self, grants=None, holds=None):
+        self.grants = grants or {}
+        if holds is not None:
+            self.holds = holds
+
+
+def forward_pass_threads(worker):
+    run(worker, Task({"path": str(ANIME)}, {"classifier": "anime_real"}))
+    return worker.models.session(MODELS["anime_real"]).get_session_options().intra_op_num_threads
+
+
+@pytest.mark.parametrize("worker_class", [ClassifyImage, ClassifyFrames])
+def test_a_forward_pass_runs_on_as_many_threads_as_the_cpu_units_the_process_holds(hub, config, worker_class):
+    assert forward_pass_threads(worker_class(config, Pool(holds={"cpu": 6, "gpu": 1}))) == 6
+
+
+@pytest.mark.parametrize("pool", [None, Pool(), Pool({"gpu": [0]}), Pool(holds={"gpu": 1})])
+def test_a_forward_pass_runs_on_cpu_units_threads_when_the_host_does_not_say(hub, config, pool):
+    assert forward_pass_threads(ClassifyImage(config, pool)) == CPU_UNITS
