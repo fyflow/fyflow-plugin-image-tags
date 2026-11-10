@@ -4,9 +4,11 @@ The models are fetched once from huggingface.co at their pinned commits into `py
 against the catalogue's sha256), then served from a local HTTP server that the Worker reaches through `HF_ENDPOINT`.
 """
 
+import ctypes
 import http.server
 import shutil
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -59,11 +61,19 @@ def served(hub, model):
 
 
 class Hub:
-    """A local Hugging Face: serves what is under `root` and counts the requests for each path."""
+    """A local Hugging Face: serves what is under `root` and counts the requests for each path.
+
+    `hold()` makes it stall each file after its first `HEAD_BYTES`, as a slow network would, until `release()`: a test
+    can then look at a download midway.
+    """
+
+    HEAD_BYTES = 256 * 1024
 
     def __init__(self, root):
         self.root = root
         self.requests = []
+        self._flowing = threading.Event()
+        self._flowing.set()
         hub = self
 
         class Handler(http.server.SimpleHTTPRequestHandler):
@@ -72,7 +82,22 @@ class Hub:
 
             def do_GET(self):
                 hub.requests.append(self.path)
-                super().do_GET()
+                path = Path(self.translate_path(self.path))
+                if not path.is_file():
+                    self.send_error(404, "Entry not found")
+                    return
+                body = path.read_bytes()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/octet-stream")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                try:
+                    self.wfile.write(body[: hub.HEAD_BYTES])
+                    self.wfile.flush()
+                    hub._flowing.wait(60)
+                    self.wfile.write(body[hub.HEAD_BYTES :])
+                except ConnectionError:
+                    pass  # the downloader hung up: what a stopped download does
 
             def log_message(self, *args):
                 pass
@@ -81,9 +106,56 @@ class Hub:
         self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
+    def hold(self):
+        self._flowing.clear()
+
+    def release(self):
+        self._flowing.set()
+
     def close(self):
+        self.release()
         self.server.shutdown()
         self.server.server_close()
+
+
+class Running:
+    """A Task running on a thread of its own, as the shim runs a plain `def run`; `cancel()` does what the shim's
+    cancel does: it marks the context cancelled, then raises `KeyboardInterrupt` inside the Task's thread."""
+
+    def __init__(self, worker, task, ctx=None):
+        self.ctx = ctx or Context()
+        self._outcome = None
+        self.thread = threading.Thread(target=self._run, args=(worker, task), daemon=True)
+        self.thread.start()
+
+    def _run(self, worker, task):
+        try:
+            self._outcome = (worker.run(task, self.ctx), None)
+        except BaseException as error:  # noqa: BLE001  (KeyboardInterrupt is how a cancel arrives)
+            self._outcome = (None, error)
+
+    def cancel(self):
+        self.ctx.cancelled = True
+        ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(self.thread.ident), ctypes.py_object(KeyboardInterrupt)
+        )
+
+    def result(self, timeout=30):
+        """What `run` returned, or what it raised, raised again; fails if the Task is still running after `timeout`."""
+        self.thread.join(timeout)
+        assert not self.thread.is_alive(), f"the Task is still running after {timeout} s"
+        result, error = self._outcome
+        if error is not None:
+            raise error
+        return result
+
+
+def wait_until(condition, timeout=10, what="the condition"):
+    """Waits for `condition()` to be true, failing after `timeout` seconds."""
+    deadline = time.monotonic() + timeout
+    while not condition():
+        assert time.monotonic() < deadline, f"{what} did not happen within {timeout} s"
+        time.sleep(0.01)
 
 
 @pytest.fixture(scope="session")
@@ -107,6 +179,16 @@ def data_dir(tmp_path):
     path = tmp_path / "data"
     path.mkdir()
     return path
+
+
+@pytest.fixture
+def model_dir(models, tmp_path):
+    """A folder of the catalogue's models laid out as `modelDir` holds them, as a person would fill it by hand."""
+    root = tmp_path / "offline-models"
+    for model in MODELS.values():
+        (root / model.local_path).parent.mkdir(parents=True)
+        shutil.copyfile(models[model.id], root / model.local_path)
+    return root
 
 
 @pytest.fixture

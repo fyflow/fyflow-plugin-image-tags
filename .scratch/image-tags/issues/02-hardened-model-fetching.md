@@ -4,11 +4,11 @@
 
 **Blocked by:** 01
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] One download per model per process, shared by concurrent Tasks; progress via `ctx.progress`; Cancel stops it and leaves no file.
-- [ ] A sha256 mismatch fails that Task only and leaves no file; the next Task tries again.
-- [ ] Temp file plus rename into `<dataDir>/models/<repo>/<commit>/<name>/`, so processes of different pools or Profiles cannot collide.
-- [ ] `modelDir` (start-up field): nothing is downloaded; a missing model fails the Task, naming the folder.
-- [ ] `status()`: `ok` with the models present, or `info` "Models download on first use" listing the missing ones.
-- [ ] Tests against a local HTTP server: one download for concurrent Tasks, progress reported, Cancel stops it, a mismatch leaves no file, `modelDir` downloads nothing.
+- [x] One download per model per process, shared by concurrent Tasks; progress via `ctx.progress`; Cancel stops it and leaves no file.
+- [x] A sha256 mismatch fails that Task only and leaves no file; the next Task tries again.
+- [x] Temp file plus rename into `<dataDir>/models/<repo>/<commit>/<name>/`, so processes of different pools or Profiles cannot collide.
+- [x] `modelDir` (start-up field): nothing is downloaded; a missing model fails the Task, naming the folder.
+- [x] `status()`: `ok` with the models present, or `info` "Models download on first use" listing the missing ones.
+- [x] Tests against a local HTTP server: one download for concurrent Tasks, progress reported, Cancel stops it, a mismatch leaves no file, `modelDir` downloads nothing.

@@ -2,15 +2,22 @@
 // in for the Host's bridge, with the checks fyflow-app adds for Python Workers. Python itself is tested in
 // `python/tests`.
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { availableParallelism } from "node:os";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { type FlowDefinition, type RegistryDocument, validateDefinition } from "fyflow-orchestration";
+import {
+  type FlowDefinition,
+  findings,
+  type JsonSchema,
+  type RegistryDocument,
+  schemaProblem,
+  validateDefinition,
+} from "fyflow-orchestration";
 import { createRuntime } from "fyflow-orchestration/scheduler";
 import { CPU_GROUP, type PluginNodeType } from "fyflow-plugin-sdk";
-import { describe, expect, it } from "vitest";
-import plugin, { CLASSIFIERS, DEFAULT_CLASSIFIER } from "../plugin.ts";
+import { afterEach, describe, expect, it } from "vitest";
+import plugin, { CLASSIFIERS, DEFAULT_CLASSIFIER, localPathOf, MODELS } from "../plugin.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const project = join(root, "python");
@@ -30,7 +37,10 @@ const registry = (): RegistryDocument => ({
     Object.entries(plugin.nodeTypes ?? {}).map(
       ([name, { icon: _i, description: _d, profile: _p, ...declaration }]) => [
         name,
-        { ...(declaration as PluginNodeType), config: { host: { dataDir: "D:/data" } } },
+        {
+          ...(declaration as PluginNodeType),
+          config: { modelDir: "D:/models", host: { dataDir: "D:/data" } },
+        },
       ],
     ),
   ),
@@ -89,12 +99,19 @@ describe("the Plugin's declarations", () => {
           "-c",
           "import json; from image_tags.catalogue import MODELS, DEFAULT_CLASSIFIER as d; " +
             "print(json.dumps({'default': d, 'classifiers': {k: {'title': c.title, 'labels': list(c.labels)} " +
-            "for k, c in MODELS.items()}}))",
+            "for k, c in MODELS.items()}, 'models': {k: {'repo': c.repo, 'commit': c.commit, 'name': c.name, " +
+            "'file': c.file, 'localPath': c.local_path} for k, c in MODELS.items()}}))",
         ],
         { cwd: project, encoding: "utf8" },
       ),
     );
-    expect(catalogue).toEqual({ default: DEFAULT_CLASSIFIER, classifiers: CLASSIFIERS });
+    expect(catalogue).toEqual({
+      default: DEFAULT_CLASSIFIER,
+      classifiers: CLASSIFIERS,
+      models: Object.fromEntries(
+        Object.entries(MODELS).map(([id, model]) => [id, { ...model, localPath: localPathOf(model) }]),
+      ),
+    });
   });
 
   it("takes a Flow that names a classifier, and refuses one the catalogue lacks", () => {
@@ -102,5 +119,61 @@ describe("the Plugin's declarations", () => {
     expect(findingsOf(flowOf({})).map((f) => f.rule)).toEqual([]);
     // FD-V33: a Node's settings break its Worker's settingsSchema.
     expect(findingsOf(flowOf({ classifier: "nope" })).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("has Profile fields as fyflow-app takes them: a schema in fyflow's subset, start-up fields it declares", () => {
+    const { profile, dataDir } = plugin;
+    if (profile === undefined) throw new Error("no profile");
+    const schema = profile.schema as JsonSchema & { properties: Record<string, JsonSchema> };
+    expect(schemaProblem(schema)).toBeNull();
+    const fields = Object.keys(schema.properties);
+    for (const field of profile.startup ?? []) expect(fields).toContain(field);
+    // A Plugin with a data directory finds it under `host` in its config, so no start-up field may be called that.
+    if (dataDir === true) expect(profile.startup ?? []).not.toContain("host");
+    for (const nodeType of Object.values(plugin.nodeTypes ?? {}))
+      for (const field of nodeType.profile ?? []) expect(fields).toContain(field);
+  });
+
+  it("takes a model folder on a Profile, as a start-up field ClassifyImage reads", () => {
+    const schema = plugin.profile?.schema as JsonSchema;
+    expect(plugin.profile?.startup).toContain("modelDir");
+    expect(plugin.nodeTypes?.ClassifyImage?.profile).toContain("modelDir");
+    expect(findings(schema, { modelDir: "D:/models" })).toEqual([]);
+    expect(findings(schema, {})).toEqual([]);
+    expect(findings(schema, { modelDir: 3 })).not.toEqual([]);
+  });
+});
+
+describe("the Plugin's status", () => {
+  let dataDir: string;
+  afterEach(() => rmSync(dataDir, { recursive: true, force: true }));
+
+  const statusOf = async () => {
+    if (plugin.status === undefined) throw new Error("no status()");
+    return await plugin.status({ dataDir });
+  };
+
+  it("says the models download on first use, listing the ones not there yet", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+
+    const status = await statusOf();
+
+    expect(status.level).toBe("info");
+    expect(status.summary).toBe("Models download on first use");
+    expect(JSON.stringify(status.details)).toContain("anime_real");
+  });
+
+  it("is ok once every model is in the data directory", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    for (const model of Object.values(MODELS)) {
+      const file = join(dataDir, "models", localPathOf(model));
+      mkdirSync(join(file, ".."), { recursive: true });
+      writeFileSync(file, "a model");
+    }
+
+    const status = await statusOf();
+
+    expect(status.level).toBe("ok");
+    expect(status.summary).toContain("anime_real");
   });
 });

@@ -11,7 +11,8 @@ class ClassifyImage:
     """One image per Task, through one classifier of the catalogue (the `classifier` setting)."""
 
     def __init__(self, config):
-        self.models = Models(config["host"]["dataDir"])
+        # `modelDir`, a Profile start-up field, is the folder of an offline machine's models: then nothing downloads.
+        self.models = Models(config["host"]["dataDir"], model_dir=config.get("modelDir"))
 
     def run(self, task, ctx):
         path = task.input.get("path") if isinstance(task.input, dict) else None
@@ -23,7 +24,7 @@ class ClassifyImage:
             raise ValueError(f"No classifier `{classifier}`: one of {', '.join(MODELS)}")
 
         image = load_image(path)
-        scores = self.models.scores(model, to_input(image, model.size)[np.newaxis])[0]
+        scores = self.models.scores(model, to_input(image, model.size)[np.newaxis], ctx)[0]
         by_label = {label: float(score) for label, score in zip(model.labels, scores, strict=True)}
         tag = max(by_label, key=by_label.get)
         return {
