@@ -284,7 +284,7 @@ v1 has. On it sits one Node Type pair (an image and its frames) per kind of answ
 
 ## Out of Scope
 
-For v1; "After v1" above plans the first three.
+For v1; "After v1" above plans taggers, zero-shot models and embeddings.
 
 - Taggers and any multi-label output (the catalogue reserves `kind: "tagger"`).
 - Models a user adds by hand beyond `modelDir`'s copies of catalogue entries.
