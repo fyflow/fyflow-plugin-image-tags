@@ -13,3 +13,6 @@ python/.cache/
 .scratch/**/*-request*.md
 .scratch/**/*-reply*.md
 .scratch/**/*prompt*.md
+# Agent skills from mattpocock/skills (MIT): installed per machine from skills-lock.json, not published here.
+.agents/skills/
+.claude/skills/

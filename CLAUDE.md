@@ -1,5 +1,7 @@
 ## Agent skills
 
+The skills themselves (`.agents/skills/`, `.claude/skills/`) are gitignored: install them from `skills-lock.json` (`mattpocock/skills`, MIT). To tailor one for this repo, un-ignore that one skill's folder and commit it with its upstream LICENSE beside it.
+
 ### Issue tracker
 
 Issues and specs live as local markdown files under `.scratch/<feature>/`; private notes (requests and replies to other repos, prompts) go in the gitignored `.scratch/<feature>/notes/` and are never linked from tracked files. See `docs/agents/issue-tracker.md`.
