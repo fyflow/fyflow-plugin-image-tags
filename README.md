@@ -110,9 +110,10 @@ sets it itself.
 ## Resources
 
 Both Node Types hold what they use per process, not per Task: while its process lives (and for 5 s after its last
-Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group, and a Task holds nothing of its own.
-Tasks waiting on a shared forward pass use no processor, and a forward pass runs on 4 threads. On the `cpu` build a
-pool holds the 4 `cpu` units and no `gpu` unit. With one GPU unit, the two Node Types' GPU pools, and each Profile's,
+Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group (every one, on a machine with fewer than 4
+logical processors), and a Task holds nothing of its own. Tasks waiting on a shared forward pass use no processor, and
+a forward pass runs on as many threads as the `cpu` units held. On the `cpu` build a pool holds the same `cpu` units
+and no `gpu` unit. With one GPU unit, the two Node Types' GPU pools, and each Profile's,
 take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s more).
 That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks alternating
 between them. A Profile can change the idle time (`idleTimeout`) for either Node Type.

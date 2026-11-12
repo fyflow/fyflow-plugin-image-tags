@@ -19,6 +19,8 @@ import { CPU_GROUP, GPU_GROUP, type PluginNodeType, type PluginPool } from "fyfl
 import { afterEach, describe, expect, it } from "vitest";
 import plugin, {
   CLASSIFIERS,
+  CPU_UNITS,
+  cpuUnits,
   DEFAULT_BATCH_SIZE,
   DEFAULT_CLASSIFIER,
   localPathOf,
@@ -244,23 +246,29 @@ describe("the Plugin's declarations", () => {
   });
 
   it.each(NODE_TYPES)(
-    "holds a GPU and 4 processors per %s process, while it lives, and nothing per Task",
+    "holds a GPU and up to 4 processors per %s process, while it lives, and nothing per Task",
     (type) => {
       const nodeType = plugin.nodeTypes?.[type];
       expect(nodeType?.groups ?? []).toEqual([]);
       expect(nodeType?.pool).toMatchObject({
         maxThreads: 1,
         idleTimeout: 5_000,
-        residentGroups: { [GPU_GROUP]: 1, [CPU_GROUP]: 4 },
+        residentGroups: { [GPU_GROUP]: 1, [CPU_GROUP]: cpuUnits(availableParallelism()) },
       });
       // The Worker runs a forward pass on as many threads as the cpu units its pool says, else this many.
-      expect(pythonWorker().cpuUnits).toBe(RESIDENT_GROUPS[CPU_GROUP]);
+      expect(pythonWorker().cpuUnits).toBe(CPU_UNITS);
     },
   );
 
-  it.each(NODE_TYPES)("holds no GPU per %s process on the cpu build, only its 4 processors", (type) => {
+  it("holds 4 processors per process, or every processor of a machine with fewer", () => {
+    expect([1, 2, 3, 4, 5, 64].map(cpuUnits)).toEqual([1, 2, 3, 4, 4, 4]);
+    expect(cpuUnits(0)).toBe(1);
+    expect(RESIDENT_GROUPS[CPU_GROUP]).toBe(cpuUnits(availableParallelism()));
+  });
+
+  it.each(NODE_TYPES)("holds no GPU per %s process on the cpu build, only its processors", (type) => {
     const pool = plugin.nodeTypes?.[type]?.pool;
-    expect(pool?.variants).toEqual({ cpu: { residentGroups: { [CPU_GROUP]: 4 } } });
+    expect(pool?.variants).toEqual({ cpu: { residentGroups: { [CPU_GROUP]: RESIDENT_GROUPS[CPU_GROUP] } } });
     for (const build of Object.keys(pool?.variants ?? {}))
       expect(Object.keys(plugin.python?.variants ?? {})).toContain(build);
   });

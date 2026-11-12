@@ -2,6 +2,7 @@
 // fyflow-plugin-sdk 0.11.0). What it declares is here; the work is in `python/`, a uv project the Host makes an
 // environment of.
 import { existsSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
 import { CPU_GROUP, definePlugin, GPU_GROUP, type PluginStatus } from "fyflow-plugin-sdk";
 import { pickBuild } from "./pick-build.ts";
@@ -124,12 +125,22 @@ const settingsSchema = {
 /** The most frames in one forward pass when a Profile sets no `batchSize` (`DEFAULT_BATCH_SIZE` in `worker.py`). */
 export const DEFAULT_BATCH_SIZE = 16;
 
+/** The most `cpu` units a process holds, and so the threads of a forward pass (`CPU_UNITS` in `worker.py`). */
+export const CPU_UNITS = 4;
+
+/**
+ * The `cpu` units a process holds on a machine of this many logical processors: `CPU_UNITS`, or every processor where
+ * there are fewer. The Host's `cpu` group has a unit per logical processor and refuses a Plugin whose pool holds more,
+ * so a fixed 4 would keep the Plugin off a 2-processor machine.
+ */
+export const cpuUnits = (processors: number): number => Math.max(1, Math.min(CPU_UNITS, processors));
+
 /**
  * What each process holds while it lives, not each Task: Tasks waiting on a shared forward pass use no processor, and
  * a pass runs on as many threads as the `cpu` units held (the Worker reads them from `host.pool`, else `CPU_UNITS` in
  * `worker.py`). A Profile may set other counts.
  */
-export const RESIDENT_GROUPS = { [GPU_GROUP]: 1, [CPU_GROUP]: 4 };
+export const RESIDENT_GROUPS = { [GPU_GROUP]: 1, [CPU_GROUP]: cpuUnits(availableParallelism()) };
 
 /** What the `cpu` build holds instead: the same processors, and no `gpu` unit, which it would not use. */
 export const CPU_RESIDENT_GROUPS = { [CPU_GROUP]: RESIDENT_GROUPS[CPU_GROUP] };
