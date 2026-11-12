@@ -2,7 +2,10 @@
 name = "image-tags"
 version = "0.1.0"
 description = "The Python half of the image-tags Plugin: classifiers run with ONNX Runtime"
-requires-python = ">=3.12"
+# Capped at the newest Python every locked ONNX Runtime build has wheels for (cp312 to cp314 in 1.31.1): the Host's uv
+# takes the newest managed Python this allows, and with no cap a new Python (3.15) leaves the build uninstallable.
+# Raise it with the ONNX Runtime that ships the next Python's wheels; `tests/test_lock.py` holds the two together.
+requires-python = ">=3.12,<3.15"
 dependencies = [
   "numpy>=2.1",
   "pillow>=11",
