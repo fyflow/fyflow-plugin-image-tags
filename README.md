@@ -3,8 +3,11 @@
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
 CG or live action, of one image or of a whole video from its frames (see `.scratch/image-tags/spec.md`).
 
-Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv). The Host makes the Plugin's Python
-environment from `python/uv.lock` on install; nothing else is set up by hand.
+Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv). Install it from **Browse** on the
+app's Plugins page (the official Plugin repository), or upload the `.tgz` of a
+[Release](https://github.com/fyflow/fyflow-plugin-image-tags/releases). The Host makes the Plugin's Python environment
+from `python/uv.lock` on install; nothing else is set up by hand. Before the first Task, give a Profile a read
+[Allowed root](#allowed-roots) over the images it should see: the Plugin refuses every path until then.
 
 ## Node Types
 
@@ -23,7 +26,8 @@ change, or a **model** as it is, whose labels are the model's own (switching mod
 `style` is made for anime first: measured on a home library (see [Eval](#eval)), it finds every anime video and tags
 nothing else anime. Telling CG from live action is weaker: anime_classification's `3d` comes from 3D-style
 illustrations and it calls live-action footage `3d` too, so a CG film anime_real takes for real comes out live action,
-and about half of live action comes out `uncertain`. If anime_classification is all but sure an image is not a
+and about half of live action comes out `uncertain`. "Anime" means 2D drawn animation: Western cartoons come out
+`anime`, and stop-motion comes out `live_action`. If anime_classification is all but sure an image is not a
 painting at all (the four sum to less than 1e-6), what is not live action is split evenly between `anime` and `cg`.
 
 It hands on `{ path, classifier, labels, tag, confidence, scores, models, warnings? }`: `scores` holds each label's
@@ -167,8 +171,8 @@ batch holds one image per Task running.
 
 Each model is pinned to a Hugging Face commit and its file's sha256, and downloaded into the Plugin's data
 directory by the first Task that needs it (about 17 MB each); nothing downloads at install, and nothing else ever
-loads. A mirror of Hugging Face can be named with `HF_ENDPOINT` in the Host's environment. `anime_real_cls` is
-OpenRAIL-licensed, `anime_classification` MIT.
+loads. A mirror of Hugging Face can be named with `HF_ENDPOINT` in the Host's environment. The models are not part
+of this repository and keep their own licences: see [Licence and credits](#licence-and-credits).
 
 A download shows as the Task's progress ("Downloading the model anime_real"). Tasks of one Node Type and Profile that
 need a model at once share one download; a cancelled Task stops waiting at once, and the download itself stops when
@@ -278,3 +282,18 @@ frames; `--grid 4 --start-offset 120 --end-offset 420`), all now in the catalogu
 resized to 640 px) besides the synthetic images. They are not under this repository's MIT licence but each under its
 own: MIT (the AI-generated anime frames), CC BY 2.5, 3.0 and 4.0, and CC BY-SA 4.0 (shared under the same licence).
 Their authors, sources, licences and changes are in that folder's `CREDITS.md`, which goes with them.
+
+## Licence and credits
+
+The Plugin's code is under the [MIT licence](LICENSE). The models it downloads are not part of it, and each keeps its
+own licence, which applies to whoever runs them:
+
+- [`deepghs/anime_real_cls`](https://huggingface.co/deepghs/anime_real_cls): OpenRAIL. Its use restrictions bind
+  anyone using the model, through this Plugin too.
+- [`deepghs/anime_classification`](https://huggingface.co/deepghs/anime_classification): MIT.
+
+Both are by [DeepGHS](https://huggingface.co/deepghs). The Plugin prepares images as their
+[imgutils](https://github.com/deepghs/imgutils) does, and its tests hold its scores to imgutils' (`pnpm golden`).
+
+The test images keep their own licences, listed in `python/tests/fixtures/images/CREDITS.md` (see
+[Test images](#test-images)).

@@ -8,8 +8,15 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 
-/** What the Plugin needs at run time, beside a package.json of its own. */
-const FILES = ["plugin.ts", "pick-build.ts", "README.md", "python/pyproject.toml", "python/uv.lock"];
+/** What the Plugin needs at run time, beside a package.json of its own, and its licence, which goes with it. */
+const FILES = [
+  "plugin.ts",
+  "pick-build.ts",
+  "README.md",
+  "LICENSE",
+  "python/pyproject.toml",
+  "python/uv.lock",
+];
 /** Python packages, copied without their bytecode. */
 const PACKAGES = ["python/image_tags"];
 

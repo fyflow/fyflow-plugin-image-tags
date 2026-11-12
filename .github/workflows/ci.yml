@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    name: Typecheck, lint, test (TS and Python, CPU build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+      # The tests fetch the catalogue's models from huggingface.co at their pinned commits, once, into python/.cache/.
+      - uses: actions/cache@v4
+        with:
+          path: python/.cache/hf
+          key: models-${{ hashFiles('python/image_tags/catalogue.py') }}
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+
+  pack:
+    name: Pack (as the release workflow does)
+    uses: fyflow/fyflow-plugins/.github/workflows/check-plugin.yml@v1

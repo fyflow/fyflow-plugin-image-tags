@@ -3,6 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "description": "A fyflow-app Plugin: classify images and video frame sheets with small local ONNX models",
+  "keywords": [
+    "fyflow",
+    "fyflow-plugin",
+    "image",
+    "classification",
+    "anime",
+    "onnx"
+  ],
+  "homepage": "https://github.com/fyflow/fyflow-plugin-image-tags#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fyflow/fyflow-plugin-image-tags.git"
+  },
+  "bugs": "https://github.com/fyflow/fyflow-plugin-image-tags/issues",
   "type": "module",
   "license": "MIT",
   "packageManager": "pnpm@10.12.1",
@@ -32,5 +46,11 @@
     "fyflow-scheduler": "0.7.0",
     "typescript": "7.0.2",
     "vitest": "5.0.4"
+  },
+  "fyflow": {
+    "name": "Image tags",
+    "icon": "tag",
+    "build": "pnpm plugin-folder",
+    "pack": "dist/image-tags"
   }
 }

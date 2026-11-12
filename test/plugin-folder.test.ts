@@ -22,3 +22,11 @@ it("holds every module of the Plugin's own that plugin.ts imports", async () => 
   expect(own).toContain("pick-build.ts");
   for (const module of ["plugin.ts", ...own]) expect(existsSync(join(to, module ?? "")), module).toBe(true);
 });
+
+it("holds the licence, which the MIT licence asks to go with every copy", async () => {
+  to = mkdtempSync(join(tmpdir(), "image-tags-folder-"));
+
+  await makePluginFolder(to);
+
+  expect(readFileSync(join(to, "LICENSE"), "utf8")).toBe(readFileSync(join(root, "LICENSE"), "utf8"));
+});

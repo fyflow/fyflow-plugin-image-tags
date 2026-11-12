@@ -1,0 +1,16 @@
+# Releases the Plugin for the official fyflow Plugin repository on a tag `<id>@<version>`
+# (fyflow-ext.image-tags@0.1.0): fyflow-plugins' reusable workflow builds it (`fyflow.build` in package.json,
+# `pnpm plugin-folder`), packs `fyflow.pack` (dist/image-tags) and makes a GitHub Release with the tarball. With a
+# FYFLOW_PLUGINS_TOKEN secret it also opens the PR adding the version to the index; without one it stops at the
+# Release and prints the entry in the run's summary.
+name: Release
+on:
+  push:
+    tags: ["*@*"] # <id>@<version>
+jobs:
+  release:
+    permissions:
+      contents: write # the GitHub Release
+    uses: fyflow/fyflow-plugins/.github/workflows/release-plugin.yml@v1
+    secrets:
+      FYFLOW_PLUGINS_TOKEN: ${{ secrets.FYFLOW_PLUGINS_TOKEN }}
