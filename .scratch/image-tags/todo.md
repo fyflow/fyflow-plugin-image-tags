@@ -40,6 +40,17 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
     - Each unit maps to DirectML's `device_id` by LUID. Check first which adapter order `device_id` follows.
     - On a machine whose only GPU is integrated, `pickVariant` still picks `directml` (it sees no Profile), so the Worker would fall back to the CPU, holding the `gpu` unit for nothing.
 
+## Settings that depend on the chosen model
+
+- **The need:** a richer model, such as an object detector, has parameters to tune per Node (score threshold, NMS IoU, maximum detections, classes to keep), and different models take different ones.
+- **What fyflow allows now (2026-11-12):** one settings schema per Node Type, in fyflow's keyword subset (`fyflow-app/packages/web/src/editor/schema-form.ts`, `SUPPORTED_KEYWORDS`): no `oneOf`, `anyOf` or `if`/`then`, so the form can't show fields by the chosen `classifier`.
+- **Ways within that:**
+  - **A Node Type per kind of model:** detection returns boxes, not a tag, so it gets its own Node Type, such as `DetectObjects`, whose shared parameters are plain settings. The preferred way for detection.
+  - **One optional section per model:** `options: { <model>: {...} }`. The Worker reads only the chosen model's section and warns about the others.
+  - **Flat optional fields,** each described as "used by X": fine for two or three.
+- **To look into in fyflow-app:** conditional schemas: `oneOf` branches told apart by a `const` on the choosing field, the form showing only the chosen branch's fields, and the Host checking a Node's settings against that branch. This would be a request to fyflow-app, like the 0.11 ones.
+- **The batching catch:** `ClassifyImage` shares forward passes between Tasks. Parameters applied after the pass (thresholds, NMS, class filters) can differ per Task. Parameters that change the pass (input size, model variant) mean grouping batches by them, or putting them on the Profile, like `batchSize`.
+
 ## Small things
 
 - **A flaky test:** `test_after_a_cancelled_download_the_next_task_downloads_again` failed once during ticket 06's runs and passed on every rerun since.
