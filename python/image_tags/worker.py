@@ -16,18 +16,29 @@ from .preprocess import open_image, to_input, to_rgb
 #: The most frames in one forward pass when the Profile sets no `batchSize`: a `ClassifyImage` batch, a
 #: `ClassifyFrames` Task's chunk.
 DEFAULT_BATCH_SIZE = 16
-#: The `cpu` units each process holds while it lives: its pools' `residentGroups` in `plugin.ts`. A forward pass runs
-#: on as many threads. Until the Host says what a process holds (`pool.holds`), the Worker can only assume this.
+#: The `cpu` units each process holds while it lives, when the Host does not say (before SDK 0.11): its pools'
+#: `residentGroups` in `plugin.ts`. A forward pass runs on as many threads.
 CPU_UNITS = 4
-#: The most `ClassifyImage` Tasks a process runs at once: its pool's `maxConcurrentTasks` in `plugin.ts`.
+#: The most `ClassifyImage` Tasks a process runs at once, when the Host does not say: its pool's `maxConcurrentTasks` in
+#: `plugin.ts`.
 TASKS_AT_ONCE = 32
 
 
-def _cpu_units(pool) -> int:
-    """The `cpu` units the process holds: what the Host says (`pool.holds`, which no Host gives yet), else
-    `CPU_UNITS`."""
-    holds = getattr(pool, "holds", None)
-    return (holds or {}).get("cpu") or CPU_UNITS
+def _pool_options(config) -> dict:
+    """The pool options the process runs under, as the Host gives them (since SDK 0.11): the Node Type's, with its
+    Profile's over them. Empty from an older Host."""
+    return config["host"].get("pool") or {}
+
+
+def _cpu_units(config) -> int:
+    """The `cpu` units fyflow booked for the process, else `CPU_UNITS`."""
+    cpu = (_pool_options(config).get("residentGroups") or {}).get("cpu") or {}
+    return cpu.get("cost") or CPU_UNITS
+
+
+def _tasks_at_once(config) -> int:
+    """The most Tasks the process runs at once, else `TASKS_AT_ONCE`."""
+    return _pool_options(config).get("maxConcurrentTasks") or TASKS_AT_ONCE
 
 
 class _Classify:
@@ -37,12 +48,14 @@ class _Classify:
         # Profile start-up fields: `modelDir`, the folder of an offline machine's models (then nothing downloads), and
         # `batchSize`, the most frames in one forward pass.
         self.batch_size = config.get("batchSize") or DEFAULT_BATCH_SIZE
-        # On the GPU the process holds while it lives, when the variant's build has a GPU provider.
+        # On the GPU the process holds while it lives, when the variant's build has a GPU provider. The variant itself
+        # (`host.variant`, since SDK 0.11) is only said on stderr: the providers are what the installed build offers.
         self.models = Models(
             config["host"]["dataDir"],
             model_dir=config.get("modelDir"),
-            threads=_cpu_units(pool),
+            threads=_cpu_units(config),
             device=device_of(pool),
+            variant=config["host"].get("variant"),
         )
 
     @staticmethod
@@ -86,8 +99,10 @@ class ClassifyImage(_Classify):
         self._forward = ThreadPoolExecutor(max_workers=1, thread_name_prefix="image-tags-forward")
         # What blocks a Task, off the event loop: reading its image, and getting each model, which may mean waiting on
         # a download. Enough threads for every Task at once waiting on every model (the event loop's own executor,
-        # `asyncio.to_thread`'s, may have fewer than 32), started only as they are needed.
-        self._blocking = ThreadPoolExecutor(TASKS_AT_ONCE * len(MODELS), thread_name_prefix="image-tags-task")
+        # `asyncio.to_thread`'s, may have fewer), started only as they are needed.
+        self._blocking = ThreadPoolExecutor(
+            _tasks_at_once(config) * len(MODELS), thread_name_prefix="image-tags-task"
+        )
         self._batchers: dict[str, Batcher] = {}
 
     async def run(self, task, ctx):

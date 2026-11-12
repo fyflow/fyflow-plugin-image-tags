@@ -8,8 +8,8 @@ dependencies = [
   "pillow>=11",
 ]
 
-# ONNX Runtime's builds, one per variant (`plugin.ts`'s `python.variants`): the Host syncs the one its
-# `python.accelerator` names, else `cpu`. Each installs the `onnxruntime` module, so an environment holds one.
+# ONNX Runtime's builds, one per variant (`plugin.ts`'s `python.variants`): the Host syncs the one the Plugin picks
+# (`pickVariant`), and each one a Profile sets. Each installs the `onnxruntime` module, so an environment holds one.
 [project.optional-dependencies]
 cpu = ["onnxruntime>=1.21"]
 # CUDA and cuDNN as pip packages, loaded by `onnxruntime.preload_dlls()`: no CUDA install on the machine, only a driver

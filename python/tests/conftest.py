@@ -33,13 +33,10 @@ class Task:
 
 
 class Pool:
-    """A Worker's pool as the shim builds it (`grants`), and as a Host might once it says what the process holds of
-    counting groups too (`holds`)."""
+    """A Worker's pool as the shim builds it: the units it holds, by group (`grants`)."""
 
-    def __init__(self, grants=None, holds=None):
+    def __init__(self, grants=None):
         self.grants = grants or {}
-        if holds is not None:
-            self.holds = holds
 
 
 class Context:

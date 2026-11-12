@@ -80,3 +80,17 @@ def test_a_session_says_where_it_runs_when_it_loads(hub, config, capfd):
 
     assert worker.models.session(MODELS["anime_real"]).get_providers() == [CPU]
     assert "image-tags: the model anime_real runs on CPUExecutionProvider" in capfd.readouterr().err
+
+
+@pytest.mark.parametrize("variant", ["cpu", "cuda"])
+def test_a_session_says_which_build_it_runs_in(hub, config, capfd, variant):
+    worker = ClassifyImage({**config, "host": {**config["host"], "variant": variant}}, Pool({"gpu": [0]}))
+    run(worker, Task({"path": str(ANIME)}, {"classifier": "anime_real"}))
+
+    assert f"; the {variant} build, onnxruntime " in capfd.readouterr().err
+
+
+def test_a_session_on_an_older_host_names_no_build(hub, config, capfd):
+    run(ClassifyImage(config), Task({"path": str(ANIME)}, {"classifier": "anime_real"}))
+
+    assert " build, " not in capfd.readouterr().err

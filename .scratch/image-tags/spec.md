@@ -59,8 +59,9 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 
 ### Plugin
 
-- Package `fyflow-plugin-image-tags`, id `fyflow-ext.image-tags`, `dataDir: true`, peer `fyflow-plugin-sdk ^0.9.0`
-  (Python Workers from 0.8.0; `grants` for the GPU device from 0.9.0).
+- Package `fyflow-plugin-image-tags`, id `fyflow-ext.image-tags`, `dataDir: true`, peer `fyflow-plugin-sdk ^0.11.0`
+  (Python Workers from 0.8.0; `grants` for the GPU device from 0.9.0; `pickVariant`, holds per build and `host.pool`
+  from 0.11.0, where a Host before 0.11 refuses `pool.variants`).
 - Layout follows the SDK README's Python Worker layout and fyflow-app's `examples/plugins/word-counter`:
   `package.json`, `plugin.ts` (definition, schemas, Node Types, `status()`), `python/pyproject.toml`,
   `python/uv.lock`, `python/image_tags/…`. `pnpm plugin-folder` makes a folder the app installs, as in
@@ -73,9 +74,12 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
   - `cuda`: `onnxruntime-gpu[cuda,cudnn]` (CUDA and cuDNN as pip packages; `onnxruntime.preload_dlls()` before the
     first session; the driver must support the wheel's CUDA major, 13.x today)
   - `directml`: `onnxruntime-directml`
-- The variant is the Host's `python.accelerator` (`fyflow.config.json` → `{ "python": { "accelerator": "directml" } }`,
-  or `FYFLOW_PYTHON_ACCELERATOR`), Host-wide, `cpu` by default, no auto-detection. The number of GPUs is the built-in
-  `gpu` group's units (1 by default), set on the Resource Groups page. The README explains both.
+- The Plugin picks the variant per machine (`python.pickVariant`, in `pick-build.ts`): `cuda` with an NVIDIA driver
+  (Windows: `%SystemRoot%\System32\nvcuda.dll` of driver 580.88 or later (CUDA 13's), read from its `VS_FIXEDFILEINFO`, or any
+  whose version can't be read; Linux: `/proc/driver/nvidia/version` of 580.65.06 or later, else `libcuda.so.1` in the
+  usual places), else `directml` on Windows, else `cpu`; never an error, `cpu` on any. A Profile overrides it (the
+  Default Profile's for every Node), so one Flow can run some Nodes on the GPU and others on the CPU. The number of
+  GPUs is the built-in `gpu` group's units (1 by default), set on the Resource Groups page. The README explains both.
 - Reads any image path it is given, like the video-thumbnail Plugin: no Allowed roots in v1.
 
 ### Input
@@ -172,8 +176,12 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 - Pools are per (Node Type, Profile), each its own Python process: each loads its own sessions (~17 MB per model)
   and holds its own `gpu` unit. With one unit, the two Node Types take turns on the GPU; the short `idleTimeout`
   keeps the wait short. The README says so.
-- Under the `cpu` variant the Node Types still hold the `gpu` unit (a pool cannot change by variant). Accepted and
-  documented; revisit if fyflow-app gains per-variant pool options.
+- Under the `cpu` variant the Node Types hold no `gpu` unit: each pool's `variants: { cpu: { residentGroups:
+  { cpu: 4 } } }` replaces its holds there.
+- The Worker reads the pool options it runs under at `config["host"]["pool"]`: onnxruntime's threads are
+  `residentGroups.cpu.cost` (else 4), `ClassifyImage`'s blocking thread pool is sized from `maxConcurrentTasks` (else
+  32). `config["host"]["variant"]` is only said in the session's provider line on stderr; the providers are what the
+  installed build offers.
 - The device is `pool.grants["gpu"][0]`, passed as the provider's `device_id` (CUDA) or `device_id` (DirectML). The
   Host sets no `CUDA_VISIBLE_DEVICES`.
 - One inference session per model per process, made on first use and kept until the instance retires.
@@ -239,5 +247,4 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 - Zero-shot models, detection, embeddings.
 - Pulling frames from video, and scene detection: the video-thumbnail Plugin's (and its service's) job.
 - Frame sheets inside a folder (read as plain images).
-- Accelerator auto-detection (fyflow-app's).
-- Allowed roots.
+- Allowed roots (a todo item: the `roots: true` opt-in of SDK 0.11.0).

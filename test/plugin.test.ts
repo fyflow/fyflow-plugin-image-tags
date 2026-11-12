@@ -15,7 +15,7 @@ import {
   validateDefinition,
 } from "fyflow-orchestration";
 import { createRuntime } from "fyflow-orchestration/scheduler";
-import { CPU_GROUP, GPU_GROUP, type PluginNodeType } from "fyflow-plugin-sdk";
+import { CPU_GROUP, GPU_GROUP, type PluginNodeType, type PluginPool } from "fyflow-plugin-sdk";
 import { afterEach, describe, expect, it } from "vitest";
 import plugin, {
   CLASSIFIERS,
@@ -38,14 +38,18 @@ const workers = Object.fromEntries(
   }),
 );
 
+const withoutVariants = ({ variants: _, ...pool }: PluginPool) => pool;
+
 const registry = (): RegistryDocument => ({
   workers,
   nodeTypes: Object.fromEntries(
     Object.entries(plugin.nodeTypes ?? {}).map(
-      ([name, { icon: _i, description: _d, profile: _p, ...declaration }]) => [
+      ([name, { icon: _i, description: _d, profile: _p, pool, ...declaration }]) => [
         name,
         {
           ...(declaration as PluginNodeType),
+          // The Host hands fyflow a pool without `variants`: the base's, with the build's over it.
+          ...(pool === undefined ? {} : { pool: withoutVariants(pool) }),
           config: { modelDir: "D:/models", host: { dataDir: "D:/data" } },
         },
       ],
@@ -144,7 +148,7 @@ describe("the Plugin's declarations", () => {
     expect(existsSync(join(project, "uv.lock"))).toBe(true);
   });
 
-  it("has a build of ONNX Runtime per accelerator, as conflicting extras, and none in the base", () => {
+  it("has a build of ONNX Runtime per variant, as conflicting extras, and none in the base", () => {
     expect(plugin.python?.variants).toEqual({ cpu: ["cpu"], cuda: ["cuda"], directml: ["directml"] });
     const { base, extras, conflicts } = JSON.parse(
       execFileSync(
@@ -235,6 +239,10 @@ describe("the Plugin's declarations", () => {
     expect(pythonWorker().tasksAtOnce).toBe(image?.pool?.maxConcurrentTasks);
   });
 
+  it("picks its own build on each machine, one of its variants", () => {
+    expect(plugin.python?.pickVariant).toBeTypeOf("function");
+  });
+
   it.each(NODE_TYPES)(
     "holds a GPU and 4 processors per %s process, while it lives, and nothing per Task",
     (type) => {
@@ -245,10 +253,17 @@ describe("the Plugin's declarations", () => {
         idleTimeout: 5_000,
         residentGroups: { [GPU_GROUP]: 1, [CPU_GROUP]: 4 },
       });
-      // The Worker runs a forward pass on as many threads as the cpu units it assumes it holds.
+      // The Worker runs a forward pass on as many threads as the cpu units its pool says, else this many.
       expect(pythonWorker().cpuUnits).toBe(RESIDENT_GROUPS[CPU_GROUP]);
     },
   );
+
+  it.each(NODE_TYPES)("holds no GPU per %s process on the cpu build, only its 4 processors", (type) => {
+    const pool = plugin.nodeTypes?.[type]?.pool;
+    expect(pool?.variants).toEqual({ cpu: { residentGroups: { [CPU_GROUP]: 4 } } });
+    for (const build of Object.keys(pool?.variants ?? {}))
+      expect(Object.keys(plugin.python?.variants ?? {})).toContain(build);
+  });
 
   it("lets a Profile set the most frames in a forward pass, read when a Worker starts, 16 by default", () => {
     // fyflow's schema subset has no `default`: the description says it, and the Worker applies it.
@@ -317,8 +332,11 @@ describe("the Plugin's declarations", () => {
     expect(schemaProblem(schema)).toBeNull();
     const fields = Object.keys(schema.properties);
     for (const field of profile.startup ?? []) expect(fields).toContain(field);
-    // A Plugin with a data directory finds it under `host` in its config, so no start-up field may be called that.
-    if (dataDir === true) expect(profile.startup ?? []).not.toContain("host");
+    // Its Workers find what the Host gives them under `host` in their config (`dataDir`, `pool`, `variant`), so a Host
+    // on 0.11 skips a Plugin with a field called that.
+    expect(fields).not.toContain("host");
+    expect(profile.startup ?? []).not.toContain("host");
+    expect(dataDir).toBe(true);
     for (const nodeType of Object.values(plugin.nodeTypes ?? {}))
       for (const field of nodeType.profile ?? []) expect(fields).toContain(field);
   });

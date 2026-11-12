@@ -1,9 +1,10 @@
 // The image-tags Plugin: classifies images with small local ONNX models, in a Python Worker (ADR-0026 in fyflow-app;
-// fyflow-plugin-sdk 0.9.0). What it declares is here; the work is in `python/`, a uv project the Host makes an
+// fyflow-plugin-sdk 0.11.0). What it declares is here; the work is in `python/`, a uv project the Host makes an
 // environment of.
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { CPU_GROUP, definePlugin, GPU_GROUP, type PluginStatus } from "fyflow-plugin-sdk";
+import { pickBuild } from "./pick-build.ts";
 
 /**
  * What a Node's `classifier` setting may name, as `python/image_tags/catalogue.py` has it (`CLASSIFIERS`; a test holds
@@ -125,10 +126,16 @@ export const DEFAULT_BATCH_SIZE = 16;
 
 /**
  * What each process holds while it lives, not each Task: Tasks waiting on a shared forward pass use no processor, and
- * a pass runs on as many threads as the `cpu` units held (`CPU_UNITS` in `worker.py`). The `gpu` unit is held on the
- * `cpu` variant too: a pool cannot change by variant. Until a Profile can set these counts, they are the Plugin's.
+ * a pass runs on as many threads as the `cpu` units held (the Worker reads them from `host.pool`, else `CPU_UNITS` in
+ * `worker.py`). A Profile may set other counts.
  */
 export const RESIDENT_GROUPS = { [GPU_GROUP]: 1, [CPU_GROUP]: 4 };
+
+/** What the `cpu` build holds instead: the same processors, and no `gpu` unit, which it would not use. */
+export const CPU_RESIDENT_GROUPS = { [CPU_GROUP]: RESIDENT_GROUPS[CPU_GROUP] };
+
+/** Each pool's holds by build: a build's `residentGroups` replaces the base's whole. */
+const POOL_VARIANTS = { cpu: { residentGroups: CPU_RESIDENT_GROUPS } };
 
 // The Profile's fields. `modelDir` and `batchSize` are start-up fields: the Worker reads them once, when its process
 // starts.
@@ -319,9 +326,14 @@ export default definePlugin({
   version: "0.1.0",
   base: import.meta.url,
   // The Host makes the Plugin's Python environment from `python/uv.lock` with uv, at start and at each Reload, with
-  // the extras of the variant its `python.accelerator` names (else `cpu`): each a build of ONNX Runtime
-  // (`pyproject.toml`), whose sessions run on the GPU the process holds when it has a GPU provider.
-  python: { project: "./python", variants: { cpu: ["cpu"], cuda: ["cuda"], directml: ["directml"] } },
+  // the extras of the variant `pickVariant` picks for this machine (`pick-build.ts`), and of each variant a Profile
+  // sets instead: each a build of ONNX Runtime (`pyproject.toml`), whose sessions run on the GPU the process holds when
+  // it has a GPU provider.
+  python: {
+    project: "./python",
+    variants: { cpu: ["cpu"], cuda: ["cuda"], directml: ["directml"] },
+    pickVariant: ({ platform }) => pickBuild(platform),
+  },
   // Models are downloaded into it on first use: `<dataDir>/models/<repo>/<commit, 12 characters>/<name>/`.
   dataDir: true,
   profile: { schema: profileSchema, startup: ["modelDir", "batchSize"] },
@@ -349,7 +361,13 @@ export default definePlugin({
       // once on its event loop (`TASKS_AT_ONCE` in `worker.py`), whose images go through each model together, up to
       // `batchSize` to a forward pass, a batch waiting at most 20 ms for more. Stopped after 5 s with no Task, which
       // frees the models' memory and the units, so another pool can have the GPU soon.
-      pool: { maxThreads: 1, maxConcurrentTasks: 32, idleTimeout: 5_000, residentGroups: RESIDENT_GROUPS },
+      pool: {
+        maxThreads: 1,
+        maxConcurrentTasks: 32,
+        idleTimeout: 5_000,
+        residentGroups: RESIDENT_GROUPS,
+        variants: POOL_VARIANTS,
+      },
       icon: "tag",
       description: "Tells what one image is (anime, CG or live action, …) with local classifiers.",
     },
@@ -359,7 +377,13 @@ export default definePlugin({
       // One Python process per Profile, holding its resident units; two Tasks at once, so that one Task's decoding
       // and cutting out of frames overlaps the other's forward passes. A Task runs its frames through the models
       // `batchSize` at a time.
-      pool: { maxThreads: 1, maxConcurrentTasks: 2, idleTimeout: 5_000, residentGroups: RESIDENT_GROUPS },
+      pool: {
+        maxThreads: 1,
+        maxConcurrentTasks: 2,
+        idleTimeout: 5_000,
+        residentGroups: RESIDENT_GROUPS,
+        variants: POOL_VARIANTS,
+      },
       icon: "image",
       description:
         "Tells what a whole video is (anime, CG or live action, …) from its VideoThumbnail frame sheet, or a folder of frames.",

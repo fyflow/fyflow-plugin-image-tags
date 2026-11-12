@@ -8,7 +8,7 @@ import pytest
 from image_tags.catalogue import MODELS
 from image_tags.models import Models
 from image_tags.preprocess import load_image, to_input
-from image_tags.worker import CPU_UNITS, ClassifyFrames, ClassifyImage
+from image_tags.worker import CPU_UNITS, TASKS_AT_ONCE, ClassifyFrames, ClassifyImage
 from tests.conftest import FIXTURES, IMAGES, Pool, Task, run, served
 
 GOLDEN = json.loads((FIXTURES / "golden.json").read_text(encoding="utf-8"))
@@ -232,11 +232,39 @@ def forward_pass_threads(worker):
     return worker.models.session(MODELS["anime_real"]).get_session_options().intra_op_num_threads
 
 
+def with_pool(config, **pool):
+    """`config` as a Host on SDK 0.11 gives it: with the pool options the Worker runs under, at `host.pool`."""
+    return {**config, "host": {**config["host"], "pool": pool}}
+
+
 @pytest.mark.parametrize("worker_class", [ClassifyImage, ClassifyFrames])
 def test_a_forward_pass_runs_on_as_many_threads_as_the_cpu_units_the_process_holds(hub, config, worker_class):
-    assert forward_pass_threads(worker_class(config, Pool(holds={"cpu": 6, "gpu": 1}))) == 6
+    booked = with_pool(config, residentGroups={"cpu": {"cost": 6}, "gpu": {"cost": 1}})
+    assert forward_pass_threads(worker_class(booked, Pool({"gpu": [0]}))) == 6
 
 
-@pytest.mark.parametrize("pool", [None, Pool(), Pool({"gpu": [0]}), Pool(holds={"gpu": 1})])
+@pytest.mark.parametrize(
+    "pool",
+    [None, {}, {"maxThreads": 1}, {"residentGroups": {}}, {"residentGroups": {"gpu": {"cost": 1}}}],
+)
 def test_a_forward_pass_runs_on_cpu_units_threads_when_the_host_does_not_say(hub, config, pool):
-    assert forward_pass_threads(ClassifyImage(config, pool)) == CPU_UNITS
+    # `None`: a Host before 0.11, which gives no `host.pool`.
+    given = config if pool is None else with_pool(config, **pool)
+    assert forward_pass_threads(ClassifyImage(given, Pool({"gpu": [0]}))) == CPU_UNITS
+
+
+def blocking_threads(worker):
+    return worker._blocking._max_workers
+
+
+def test_classify_image_makes_room_for_as_many_tasks_at_once_as_its_pool_runs(hub, config):
+    worker = ClassifyImage(with_pool(config, maxConcurrentTasks=8))
+    assert blocking_threads(worker) == 8 * len(MODELS)
+    worker.teardown()
+
+
+@pytest.mark.parametrize("pool", [None, {}, {"maxThreads": 1}])
+def test_classify_image_makes_room_for_tasks_at_once_tasks_when_the_host_does_not_say(hub, config, pool):
+    worker = ClassifyImage(config if pool is None else with_pool(config, **pool))
+    assert blocking_threads(worker) == TASKS_AT_ONCE * len(MODELS)
+    worker.teardown()

@@ -3,7 +3,7 @@
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
 CG or live action, of one image or of a whole video from its frames (see `.scratch/image-tags/spec.md`).
 
-Needs a Host with `fyflow-plugin-sdk` 0.9.0 or later and Python Workers (uv). The Host makes the Plugin's Python
+Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv). The Host makes the Plugin's Python
 environment from `python/uv.lock` on install; nothing else is set up by hand.
 
 ## Node Types
@@ -89,40 +89,46 @@ One process per Profile runs two Tasks at once, so one Task's decoding and cutti
 
 Both Node Types hold what they use per process, not per Task: while its process lives (and for 5 s after its last
 Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group, and a Task holds nothing of its own.
-Tasks waiting on a shared forward pass use no processor, and a forward pass runs on 4 threads. The `gpu` unit is held
-on the `cpu` variant too (a pool cannot change by variant), so with one GPU unit the two Node Types, and each Profile's
-pools, take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s
-more). That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks
-alternating between them. A Profile can change the idle time (`idleTimeout`) for either Node Type.
+Tasks waiting on a shared forward pass use no processor, and a forward pass runs on 4 threads. On the `cpu` build a
+pool holds the 4 `cpu` units and no `gpu` unit. With one GPU unit, the two Node Types' GPU pools, and each Profile's,
+take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s more).
+That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks alternating
+between them. A Profile can change the idle time (`idleTimeout`) for either Node Type.
 
-The 4 is the Plugin's: fyflow-app does not yet let a Profile change what a pool holds while it lives, nor tell the
-Worker how many `cpu` units it holds. When it does (`pool.holds`), the Worker takes its thread count from there.
+A Profile can also change what a pool holds (`residentGroups`, e.g. `{ cpu: 8 }`) and how many Tasks it runs at once
+(`maxConcurrentTasks`). The Worker reads what fyflow booked for its process: a forward pass runs on as many threads
+as the `cpu` units it holds, and `ClassifyImage` makes room for as many Tasks at once as its pool runs.
 
 ### On a GPU
 
-The Plugin runs on the CPU unless the Host's **`python.accelerator`** says otherwise: `cuda` (NVIDIA) or `directml`
-(any DirectX 12 GPU on Windows). Set it in `fyflow.config.json`, `{ "python": { "accelerator": "cuda" } }`, or with
-`FYFLOW_PYTHON_ACCELERATOR=cuda` in the Host's environment, then restart the Host; nothing is detected for you. The
-Host then makes the Plugin's Python environment with that variant's build of ONNX Runtime (`pyproject.toml`'s extras):
+The Plugin picks its build on each machine, at the Host's start and at each Reload: `cuda` with an NVIDIA driver
+(Windows: `nvcuda.dll` of driver 580.88 or later; Linux: driver 580.65.06 or later, CUDA 13's, or `libcuda.so.1` where no version
+file says), else `directml` on Windows, else `cpu`. The Host then makes the Plugin's Python environment with that
+build of ONNX Runtime (`pyproject.toml`'s extras):
 
-| Variant | Installs | Needs |
+| Build | Installs | Needs |
 | --- | --- | --- |
-| `cpu` (default) | `onnxruntime` | nothing |
+| `cpu` | `onnxruntime` | nothing |
 | `cuda` | `onnxruntime-gpu` with CUDA and cuDNN as pip packages (about 2 GB installed) | an NVIDIA driver that supports CUDA 13; no CUDA install |
 | `directml` | `onnxruntime-directml` (about 100 MB installed) | Windows with a DirectX 12 GPU |
 
-The Plugins page shows the variant on the Plugin's Python line once its environment is Ready. Each Worker process
-says on its "Python output" where each model's session runs, e.g. `image-tags: the model anime_real runs on
-CUDAExecutionProvider (gpu unit 0: device_id=0)`; a GPU provider that cannot start (a driver too old) falls back to the
-CPU, and the line says so.
+To run another build, set it on a Profile, in this Plugin's section on the Profiles page: on the Default Profile for
+every Node, or on a Profile of its own for some Nodes, so that one Flow can run some Nodes on the GPU and others on
+the CPU. The Host makes an environment of each build a Profile uses, and takes the change at the next Reload.
+
+The Plugins page shows the picked build on the Plugin's Python line once its environment is Ready. Each Worker
+process says on its "Python output" where each model's session runs, e.g. `image-tags: the model anime_real runs on
+CUDAExecutionProvider (gpu unit 0: device_id=0); the cuda build, onnxruntime 1.31.1, 4 threads`. A CUDA build whose
+driver is broken or too old falls back to the CPU, and the line says so.
 
 The GPU a process uses is the unit of the Host's `gpu` group it holds. That group has 1 unit unless its number is set
 on the Resource Groups page, which a Host with more GPUs needs: unit `n` is CUDA's device `n`. DirectML numbers
 adapters otherwise (a laptop's integrated GPU first), so with `directml` unit 0 is the fastest GPU Windows reports,
 and unit `n` above 0 is DirectML's adapter `n`.
 
-With one `gpu` unit, `ClassifyImage` and `ClassifyFrames` take turns on the GPU, as above; on the `cpu` variant they
-take the same turns, holding a unit they do not use. Set [`batchSize`](#batchsize) for the GPU's memory.
+With one `gpu` unit, `ClassifyImage` and `ClassifyFrames` take turns on the GPU, as above; on the `cpu` build they
+hold no `gpu` unit, so they run beside each other and beside GPU pools. Set [`batchSize`](#batchsize) for the GPU's
+memory.
 
 ### `batchSize`
 

@@ -1,11 +1,14 @@
 """Where the models' sessions run: on the GPU the process holds, when the variant's ONNX Runtime build offers one.
 
-The Host syncs one build per its `python.accelerator` (`pyproject.toml`'s extras): `cpu` offers the CPU only, `cuda`
-(onnxruntime-gpu) CUDA, `directml` (onnxruntime-directml) DirectML. The device is the first `gpu` unit the process
-holds (`pool.grants["gpu"]`, numbered as CUDA numbers devices, fastest first), passed to the provider; the Host sets
-no `CUDA_VISIBLE_DEVICES`. DirectML numbers adapters as Windows lists them, where a laptop's integrated GPU comes
-first, so the first unit asks it for the fastest GPU instead; another unit is DirectML's adapter of that number. The CPU stays in the list, for what a GPU provider cannot run, and for a GPU provider that
-cannot start (onnxruntime then falls back to the CPU, which the session's load line on stderr shows).
+The Host syncs the build the Plugin picks for the machine (`pick-build.ts`), or the one a Profile sets
+(`pyproject.toml`'s extras): `cpu` offers the CPU only, `cuda` (onnxruntime-gpu) CUDA, `directml` (onnxruntime-directml)
+DirectML. The providers come from what the installed build offers, not from the build's name (`host.variant`).
+
+The device is the first `gpu` unit the process holds (`pool.grants["gpu"]`, numbered as CUDA numbers devices, fastest
+first), passed to the provider; the Host sets no `CUDA_VISIBLE_DEVICES`. DirectML numbers adapters as Windows lists
+them, where a laptop's integrated GPU comes first, so the first unit asks it for the fastest GPU instead; another unit
+is DirectML's adapter of that number. The CPU stays in the list, for what a GPU provider cannot run, and for a GPU
+provider that cannot start (onnxruntime then falls back to the CPU, which the session's load line on stderr shows).
 """
 
 import threading

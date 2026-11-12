@@ -196,7 +196,8 @@ class _Download:
 class Models:
     """The models of one Worker instance: their files under `data_dir` (or in `model_dir`, which is never downloaded
     into), and one session each once loaded, running on GPU `device` when the installed ONNX Runtime build has a GPU
-    provider (`devices.py`), else on the CPU, on `threads` threads."""
+    provider (`devices.py`), else on the CPU, on `threads` threads. `variant` is the build the Host synced, for the
+    line each session says on stderr."""
 
     def __init__(
         self,
@@ -205,12 +206,15 @@ class Models:
         model_dir: str | None = None,
         threads: int = 0,
         device: int = 0,
+        variant: str | None = None,
     ):
         #: The threads a session spreads a forward pass over (onnxruntime's `intra_op_num_threads`; 0, its default:
         #: one per processor).
         self.threads = threads
         #: The GPU the sessions run on, when the build has a GPU provider: the `gpu` unit the process holds.
         self.device = device
+        #: The build of ONNX Runtime the Host synced (`host.variant`); `None` from a Host before SDK 0.11.
+        self.variant = variant
         self.model_dir = Path(model_dir) if model_dir else None
         self.root = self.model_dir or Path(data_dir) / "models"
         self.endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
@@ -244,7 +248,7 @@ class Models:
                     provider_options=[options for _, options in chosen],
                 )
                 self._sessions[model.id] = session
-                _say_where(model, session, chosen, self.device)
+                _say_where(model, session, chosen, self.device, self.variant)
             return session
 
     def scores(self, model: Model, batch: np.ndarray, ctx=None) -> np.ndarray:
@@ -283,10 +287,12 @@ class Models:
             del self._downloads[model.id]
 
 
-def _say_where(model: Model, session: ort.InferenceSession, chosen: devices.Providers, device: int) -> None:
+def _say_where(
+    model: Model, session: ort.InferenceSession, chosen: devices.Providers, device: int, variant: str | None
+) -> None:
     """A line on stderr (the Host's log, and the Plugins page's "Python output") naming the provider the session runs
     on, and saying so when it is not the GPU provider the build offered (one that could not start: onnxruntime falls
-    back to the CPU)."""
+    back to the CPU); then the build, when the Host named it."""
     running = session.get_providers()[0]
     line = f"image-tags: the model {model.id} runs on {running}"
     if running != devices.CPU:
@@ -294,5 +300,6 @@ def _say_where(model: Model, session: ort.InferenceSession, chosen: devices.Prov
     wanted = chosen[0][0]
     if running != wanted:
         line += f", not {wanted}: it could not start"
-    line += f"; onnxruntime {ort.__version__}, {session.get_session_options().intra_op_num_threads} threads"
+    line += "; " if variant is None else f"; the {variant} build, "
+    line += f"onnxruntime {ort.__version__}, {session.get_session_options().intra_op_num_threads} threads"
     print(line, file=sys.stderr, flush=True)
