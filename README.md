@@ -140,9 +140,17 @@ CUDAExecutionProvider (gpu unit 0: device_id=0); the cuda build, onnxruntime 1.3
 driver is broken or too old falls back to the CPU, and the line says so.
 
 The GPU a process uses is the unit of the Host's `gpu` group it holds. That group has 1 unit unless its number is set
-on the Resource Groups page, which a Host with more GPUs needs: unit `n` is CUDA's device `n`. DirectML numbers
-adapters otherwise (a laptop's integrated GPU first), so with `directml` unit 0 is the fastest GPU Windows reports,
-and unit `n` above 0 is DirectML's adapter `n`.
+on the Resource Groups page, which a Host with more GPUs needs: unit `n` is CUDA's device `n`.
+
+On `directml`:
+
+- **Unit 0 is the fastest GPU Windows reports.** On a machine whose only GPU is integrated, that is the integrated
+  GPU, and the Plugin runs on it.
+- **To keep the Plugin off an integrated GPU,** set this Plugin's build to `cpu` on a Profile (the Default Profile for
+  every Node). The `cpu` build holds no `gpu` unit either.
+- **More than one `gpu` unit isn't supported.** Units above 0 are DirectML's adapter of that number, in Windows'
+  order, not by speed: unit 1 may be an integrated GPU, or the same GPU as unit 0. Keep the `gpu` group at 1 unit
+  on a `directml` Host.
 
 With one `gpu` unit, `ClassifyImage` and `ClassifyFrames` take turns on the GPU, as above; on the `cpu` build they
 hold no `gpu` unit, so they run beside each other and beside GPU pools. Set [`batchSize`](#batchsize) for the GPU's

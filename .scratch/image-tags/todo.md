@@ -26,10 +26,19 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
 - **What happens:** they are separate pools, and each holds the one `gpu` unit. In a Flow that runs both at once, they take turns, waiting about 10 s each time they switch.
 - **What to look at:** whether a Host with one GPU should count it as more than one unit for small models. Or whether fyflow-app could let pools of one Plugin share a hold.
 
-## DirectML on machines with several GPUs
+## DirectML on machines with several GPUs, and integrated GPUs
 
-- **How it works now:** fyflow's GPU unit 0 asks DirectML for its high-performance GPU. Units 1 and up are passed through as DirectML's raw adapter number, which follows Windows' order. That number is wrong on a laptop with an integrated GPU listed first.
-- **What fixing it means:** listing the adapters through DXGI by GPU preference, so unit n is the n-th fastest.
+- **How it works now:** fyflow's GPU unit 0 asks DirectML for its high-performance GPU. Units 1 and up are passed through as DirectML's raw adapter number, which follows Windows' order: unit 1 may be an integrated GPU, or the same GPU as unit 0. On a machine whose only GPU is integrated, the Plugin runs on it.
+- **Decided for now (2026-11-12):** leave the code as it is and document it in the README:
+  - unit 0 is the fastest GPU;
+  - several `gpu` units aren't supported on `directml`;
+  - to avoid an integrated GPU, set the Profile's build to `cpu`.
+- **If it comes back:**
+  - **Benchmark first:** on this laptop, force DirectML onto the Intel iGPU (raw `device_id=0`) and compare a batch with the `cpu` build. If the iGPU is clearly slower, the default is wrong for machines whose only GPU is integrated.
+  - **Exclude iGPUs:** enumerate adapters through DXCore in `ctypes`, which reports `IsHardware` and `IsIntegrated`.
+    - Units count usable GPUs, fastest first: discrete only, unless a Profile start-up field (for example `integratedGpu`) allows integrated ones after them.
+    - Each unit maps to DirectML's `device_id` by LUID. Check first which adapter order `device_id` follows.
+    - On a machine whose only GPU is integrated, `pickVariant` still picks `directml` (it sees no Profile), so the Worker would fall back to the CPU, holding the `gpu` unit for nothing.
 
 ## Small things
 
