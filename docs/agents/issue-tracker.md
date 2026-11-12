@@ -9,6 +9,7 @@ Issues and specs for this repo live as markdown files in `.scratch/`.
 - Implementation issues are one file per ticket at `.scratch/<feature-slug>/issues/<NN>-<slug>.md`, numbered from `01`, never a single combined tickets file
 - Triage state is recorded as a `Status:` line near the top of each issue file (see `triage-labels.md` for the role strings)
 - Comments and conversation history append to the bottom of the file under a `## Comments` heading
+- Private notes go in `.scratch/<feature-slug>/notes/`, which is gitignored: requests to and replies from other repos, prompts for other sessions, and any working note that isn't the feature's record. The repo is public, so the spec, the tickets and `todo.md` must not link to anything in `notes/`; say what was shipped (e.g. the SDK release) instead
 
 ## When a skill says "publish to the issue tracker"
 

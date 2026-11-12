@@ -7,3 +7,9 @@ __pycache__/
 .pytest_cache/
 # Models fetched for the tests, from their pinned commits.
 python/.cache/
+# Private working notes: requests and replies to other repos, prompts, scratch. Kept local, never committed.
+.scratch/**/notes/
+# A safety net for notes written outside notes/ by mistake.
+.scratch/**/*-request*.md
+.scratch/**/*-reply*.md
+.scratch/**/*prompt*.md

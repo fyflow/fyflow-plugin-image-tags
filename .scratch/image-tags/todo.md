@@ -10,12 +10,12 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
 - **Why it doesn't work now:** the build (cpu, cuda or directml) is Host-wide. fyflow-app syncs one variant per Plugin, chosen by `python.accelerator`. The pool's resident holds are fixed in `plugin.ts`, so a CPU pool would still hold the `gpu` unit.
 - **Way 1, inside the Plugin:**
   - A Profile start-up field `device: gpu | cpu`. A GPU build of onnxruntime also has the CPU provider, and each node picks its Profile in the Flow settings.
-  - This needs fyflow-app to let a Profile set a held count to 0 (`gpu: 0`). That would be an extension of `fyflow-app-request-resident-units.md`.
+  - This needs fyflow-app to let a Profile set a held count to 0 (`gpu: 0`). That would extend the Profile-set resident units fyflow-app shipped in fyflow-plugin-sdk 0.11.0.
 - **Way 2, in fyflow-app:**
   - Choose the variant per Profile instead of per Host. fyflow-app already keeps one environment per (Plugin, variant, lock) (`packages/runtime/src/python-envs.ts`). It would have to sync each variant some Profile uses, and start each pool's process from its Profile's environment.
   - A Plugin would also need resident holds per variant: on `cpu`, `{ cpu: n }` only; on `cuda`, `{ gpu: 1, cpu: n }`. That would also remove the "the `gpu` unit is held on the cpu variant" caveat.
 - **Cost of Way 2:** disk and first-sync time. The CUDA environment is about 2 GB.
-- **Chosen direction:** Way 2, with the Plugin picking its own build. This is written up in `fyflow-app-request-plugin-picked-builds.md`:
+- **Chosen direction:** Way 2, with the Plugin picking its own build. This was requested from fyflow-app:
   - a `pickVariant` hook, with SDK helpers such as `hasNvidiaDriver()`;
   - a per-Profile override of the build;
   - resident holds per build;
@@ -44,4 +44,4 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
 
 - **A flaky test:** `test_after_a_cancelled_download_the_next_task_downloads_again` failed once during ticket 06's runs and passed on every rerun since.
 - **The frame-sheet contract:** the thumbnails repo (`fyflow-plugin-video-thumbnails`) should type and test `rect`, `video` and `config.render_timestamps`. It hasn't been filed, because that repo has no tracker set up.
-- **The fyflow-app requests:** done. Both were sent, answered (`fyflow-app-reply-resident-units.md`, `fyflow-app-reply-plugin-picked-builds.md`) and shipped in `fyflow-plugin-sdk` 0.11.0 (ticket 08).
+- **The fyflow-app requests:** done. Both were sent, answered and shipped in `fyflow-plugin-sdk` 0.11.0 (ticket 08).

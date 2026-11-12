@@ -1,6 +1,6 @@
 // Which build of the Plugin's Python environment this machine runs (`python.pickVariant` in `plugin.ts`): `cuda` with
 // a new enough NVIDIA driver, else `directml` on Windows, else `cpu`. The SDK has no
-// helpers for it (fyflow-app's reply, `.scratch/image-tags/fyflow-app-reply-plugin-picked-builds.md`), so the checks
+// helpers for it (as of fyflow-plugin-sdk 0.11.0), so the checks
 // are the Plugin's own. A driver that is there but broken still passes: the Worker falls back to the CPU.
 
 import { Buffer } from "node:buffer";
