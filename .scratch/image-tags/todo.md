@@ -36,8 +36,3 @@ These aren't tickets yet. Each one gets explored, and then turned into a ticket 
 - **A flaky test:** `test_after_a_cancelled_download_the_next_task_downloads_again` failed once during ticket 06's runs and passed on every rerun since.
 - **The frame-sheet contract:** the thumbnails repo (`fyflow-plugin-video-thumbnails`) should type and test `rect`, `video` and `config.render_timestamps`. It hasn't been filed, because that repo has no tracker set up.
 - **The fyflow-app requests:** done. Both were sent, answered (`fyflow-app-reply-resident-units.md`, `fyflow-app-reply-plugin-picked-builds.md`) and shipped in `fyflow-plugin-sdk` 0.11.0 (ticket 08).
-
-## Allowed roots
-
-- **What it is:** fyflow-app's Allowed roots (ADR-0030, SDK 0.11.0). With `roots: true`, each Task gets the folders a person allows on the Profiles page at `settings.roots`, and the Worker checks each path with `ctx.allowed_path`.
-- **Why it's not done:** the Plugin reads any image path it is given, as the spec says (no Allowed roots in v1). Opting in means checking every input path, and the Workers' `settingsSchema` may not name `roots`.

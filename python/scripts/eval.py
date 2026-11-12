@@ -24,6 +24,7 @@ import argparse
 import csv
 import hashlib
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -244,6 +245,9 @@ class _Task:
 
 
 class _Context:
+    """A Task's context, without the Host's check of Allowed roots: the eval is a local tool, reading what its CSV
+    names."""
+
     cancelled = False
 
     def progress(self, fraction, message=None):
@@ -251,6 +255,10 @@ class _Context:
 
     def log(self, message):
         pass
+
+    @staticmethod
+    def allowed_path(path, access="read"):
+        return os.path.realpath(path)
 
 
 def make_sheet(url: str, video: Path, args) -> tuple[Path, float]:
@@ -283,7 +291,7 @@ def score(worker: ClassifyFrames, frames_path: Path, scored: Scored) -> None:
     result = worker.run(_Task(frames_path, {"classifier": STYLE.id, "minConfidence": 0}), _Context())
     scored.classify_seconds = time.perf_counter() - start
 
-    images = [frame.load() for frame in read_frames(str(frames_path)).frames]
+    images = [frame.load() for frame in read_frames(str(frames_path), _Context.allowed_path).frames]
     scored.frames = len(images)
     for model in RAW_MODELS:
         scored.raw[model.id] = np.concatenate(

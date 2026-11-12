@@ -1,4 +1,5 @@
-"""What the tests share: a stand-in for the Host's Task and context, and a local Hugging Face serving the pinned models.
+"""What the tests share: a stand-in for the Host's Task and context, the context keeping to the Task's Allowed roots,
+and a local Hugging Face serving the pinned models.
 
 The models are fetched once from huggingface.co at their pinned commits into `python/.cache/` (gitignored, checked
 against the catalogue's sha256), then served from a local HTTP server that the Worker reaches through `HF_ENDPOINT`.
@@ -8,7 +9,11 @@ import asyncio
 import ctypes
 import http.server
 import inspect
+import os
+import re
 import shutil
+import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -22,14 +27,19 @@ PYTHON = Path(__file__).resolve().parent.parent
 CACHE = PYTHON / ".cache" / "hf"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 IMAGES = FIXTURES / "images"
+#: The reach a Task has unless a test gives it another: the fixtures, and the temporary folders `tmp_path` is in.
+REACH = [
+    {"path": str(FIXTURES), "access": "read"},
+    {"path": os.path.realpath(tempfile.gettempdir()), "access": "read"},
+]
 
 
 class Task:
-    """A Task as the Host's shim hands it to `run`."""
+    """A Task as the Host's shim hands it to `run`, its reach (`settings["roots"]`) as the Host writes it."""
 
-    def __init__(self, input, settings=None):
+    def __init__(self, input, settings=None, roots=REACH):
         self.input = input
-        self.settings = {"profile": {}, **(settings or {})}
+        self.settings = {"profile": {}, **(settings or {}), "roots": roots}
 
 
 class Pool:
@@ -39,11 +49,27 @@ class Pool:
         self.grants = grants or {}
 
 
-class Context:
-    """A Task's context as the shim makes it, recording what `run` says."""
+_ABSOLUTE_WINDOWS = re.compile(r"^([a-z]:[\\/]|[\\/]{2}[^\\/])", re.IGNORECASE)
 
-    def __init__(self, grants=None):
+
+def _absolute(path):
+    """Absolute as the shim takes it: on Windows with a drive or a network share."""
+    return bool(_ABSOLUTE_WINDOWS.match(path)) if sys.platform == "win32" else os.path.isabs(path)
+
+
+def _within(path, root):
+    """Whether `path` is `root` or inside it, compared as the platform compares paths."""
+    path, root = os.path.normcase(path), os.path.normcase(root)
+    return path == root or path.startswith(root if root.endswith(os.sep) else root + os.sep)
+
+
+class Context:
+    """A Task's context as the shim makes it, recording what `run` says. `reach` is its Task's `settings["roots"]`,
+    which `Running` hands it."""
+
+    def __init__(self, grants=None, reach=None):
         self.grants = grants or {}
+        self.reach = reach
         self.cancelled = False
         self.progress_reports = []
         self.logs = []
@@ -53,6 +79,26 @@ class Context:
 
     def log(self, message):
         self.logs.append(str(message))
+
+    def allowed_path(self, path, access="read"):
+        """The shim's check (`allowed_path` in fyflow-app's `_shim.py`), to its rules and messages: an absolute path
+        only, where it really leads (links followed), inside a root with enough access (write grants read); an empty
+        reach refuses every path. What the Workers do not use is left out (`unfollowed`, a root that is no folder)."""
+        if not _absolute(path):
+            raise PermissionError(f'"{path}" is not an absolute path')
+        real = os.path.realpath(path)
+        roots = self.reach or []
+        for root in roots:
+            if access == "write" and root["access"] != "write":
+                continue
+            if _within(real, os.path.realpath(root["path"])):
+                return real
+        if not roots:
+            raise PermissionError(
+                f'"{path}" is refused: this Profile has no Allowed roots for it yet. '
+                f"Add one with {access} access on the Profiles page"
+            )
+        raise PermissionError(f'"{path}" is outside every Allowed root with {access} access on this Profile')
 
 
 def cached(model):
@@ -152,6 +198,7 @@ class Running:
 
     def __init__(self, worker, task, ctx=None):
         self.ctx = ctx or Context()
+        self.ctx.reach = task.settings.get("roots")
         self._outcome = None
         self.thread = self.future = None
         if inspect.iscoroutinefunction(worker.run):

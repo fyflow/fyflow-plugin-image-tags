@@ -87,7 +87,8 @@ class _Classify:
 class ClassifyImage(_Classify):
     """One image per Task, through one classifier of the catalogue (the `classifier` setting): a model, or a preset
     over several. Its top label is the `tag` when it reaches `minConfidence` (the classifier's own when the setting is
-    left empty), else `uncertain`. A frame sheet is scored as one image, with a warning.
+    left empty), else `uncertain`. A frame sheet is scored as one image, with a warning. Its path must be in the Task's
+    reach (Allowed roots), else the Task fails saying why.
 
     The Tasks of a process run at once on the shim's event loop: each reads its image on a thread, then hands it to
     each model's batcher (`batcher.py`), so Tasks running together share forward passes, whatever their classifier."""
@@ -109,7 +110,7 @@ class ClassifyImage(_Classify):
         path = self._path(task)
         classifier = self._classifier(task)
         loop = asyncio.get_running_loop()
-        sheet, inputs = await loop.run_in_executor(self._blocking, self._read, path, classifier)
+        sheet, inputs = await loop.run_in_executor(self._blocking, self._read, path, classifier, ctx)
         rows = await asyncio.gather(*(self._row(model, inputs[model.size], ctx) for model in classifier.models))
         scores = classifier.score({model.id: row[np.newaxis] for model, row in zip(classifier.models, rows)})[0]
 
@@ -122,10 +123,11 @@ class ClassifyImage(_Classify):
         return result
 
     @staticmethod
-    def _read(path: str, classifier: Classifier):
+    def _read(path: str, classifier: Classifier, ctx):
         """The image's frame-sheet metadata (`None` unless it is a sheet), and its input for each size the
-        classifier's models take."""
-        image = open_image(path)
+        classifier's models take. The image is read where its path really leads, once the Task's reach allows it: the
+        check looks at the disk, so it is here, off the event loop."""
+        image = open_image(ctx.allowed_path(path, "read"))
         sheet = sheet_of(image)
         rgb = to_rgb(image)
         inputs = {model.size: to_input(rgb, model.size) for model in classifier.models}
@@ -152,13 +154,14 @@ class ClassifyImage(_Classify):
 class ClassifyFrames(_Classify):
     """A whole video from its frame sheet, or a folder of frames, or one image as one frame: each frame through the
     classifier, in batches, then one answer from the frames' mean scores (`tag`, `confidence`, `scores`), how many
-    frames agree with it (`agreement`), and each frame's own (`frames`)."""
+    frames agree with it (`agreement`), and each frame's own (`frames`). Its path must be in the Task's reach (Allowed
+    roots), else the Task fails saying why; a folder's image outside it is skipped with a warning."""
 
     def run(self, task, ctx):
         path = self._path(task)
         classifier = self._classifier(task)
         min_confidence = task.settings.get("minConfidence")
-        source = read_frames(path)
+        source = read_frames(path, ctx.allowed_path)
         total = len(source.frames)
 
         per_frame = []

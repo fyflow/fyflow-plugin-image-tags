@@ -89,3 +89,17 @@ def test_each_rule_on_one_frame():
     assert evaluation.RULES["shipped"](scores)[0].tolist() == pytest.approx([0.05904, 0.53136, 0.4096])
     # previous: real .8 is live action; the .2 left 90% cg (3d's share of the painted 1.0).
     assert evaluation.previous(scores)[0].tolist() == pytest.approx([0.02, 0.18, 0.8])
+
+
+def test_classify_frames_reads_whatever_the_csv_names_with_no_allowed_roots(hub, config, tmp_path):
+    # The eval is a local tool: its context checks nothing, so a folder outside every root is read.
+    folder = tmp_path / "frames"
+    folder.mkdir()
+    (folder / "a.jpg").write_bytes((IMAGES / "tiny.jpg").read_bytes())
+    worker = evaluation.ClassifyFrames(config)
+
+    result = worker.run(evaluation._Task(folder, {"classifier": "anime_real"}), evaluation._Context())
+
+    assert result["path"] == str(folder)
+    assert len(result["frames"]) == 1
+    assert len(evaluation.read_frames(str(folder), evaluation._Context.allowed_path).frames) == 1

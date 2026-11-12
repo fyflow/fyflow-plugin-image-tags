@@ -5,6 +5,10 @@ frames, whose comment (COM) segment holds the service's JSON. Of that JSON this 
 `{rect: {x, y, w, h}, timestamp_actual, …}`, the rect where the frame was drawn on the canvas), `video` (the video's
 path, when the service was not told to leave it out) and `config.render_timestamps` (whether a timestamp was drawn on
 each frame). Any other JPEG, or image, is not a sheet.
+
+Nothing is read until the Task's reach allows it (`allowed_path`, the Host's check of its Allowed roots): the path
+given, and each image of a folder, since a link inside an allowed folder may lead out of it. The sheet's `video` is
+only said, never read, so it is not checked.
 """
 
 import json
@@ -61,11 +65,18 @@ def sheet_of(image: Image.Image) -> dict | None:
     return sheet if isinstance(sheet, dict) and isinstance(sheet.get("frames"), list) else None
 
 
-def read_frames(path: str) -> Frames:
-    """The frames at `path`: a folder's images, a frame sheet's frames, or the image itself as one frame."""
-    if os.path.isdir(path):
-        return _folder(path)
-    image = open_image(path)
+#: The Host's check of a path against the Task's reach, `ctx.allowed_path(path, access)`: where the path really leads,
+#: or a `PermissionError` saying why it is refused.
+AllowedPath = Callable[[str, str], str]
+
+
+def read_frames(path: str, allowed_path: AllowedPath) -> Frames:
+    """The frames at `path`: a folder's images, a frame sheet's frames, or the image itself as one frame. `path` is
+    read where it really leads, once `allowed_path` allows it."""
+    real = allowed_path(path, "read")
+    if os.path.isdir(real):
+        return _folder(real, allowed_path)
+    image = open_image(real)
     sheet = sheet_of(image)
     rgb = to_rgb(image)
     if sheet is None:
@@ -108,11 +119,17 @@ def _box(cell, size: tuple[int, int]) -> tuple[int, int, int, int] | None:
     return (left, top, right, bottom) if right > left and bottom > top else None
 
 
-def _folder(path: str) -> Frames:
-    """Every image directly inside the folder, sorted by name; a frame sheet among them is a plain image."""
+def _folder(path: str, allowed_path: AllowedPath) -> Frames:
+    """Every image directly inside the folder, sorted by name; a frame sheet among them is a plain image. An entry the
+    reach refuses (a link leading out of it) is skipped with a warning, unless nothing else is left to read."""
     images = []
+    refused: list[PermissionError] = []
     for name in sorted(os.listdir(path)):
-        file = Path(path, name)
+        try:
+            file = Path(allowed_path(os.path.join(path, name), "read"))
+        except PermissionError as error:
+            refused.append(error)
+            continue
         if not file.is_file() or not _is_image(file):
             continue
         images.append(file)
@@ -122,8 +139,11 @@ def _folder(path: str) -> Frames:
                 "ClassifyImage)"
             )
     if not images:
+        if refused:
+            raise refused[0]
         raise ValueError(f"The folder has no images: {path}")
-    return Frames([Frame(lambda file=file: to_rgb(open_image(str(file)))) for file in images])
+    warnings = [f"Skipped: {error}" for error in refused]
+    return Frames([Frame(lambda file=file: to_rgb(open_image(str(file)))) for file in images], warnings=warnings)
 
 
 def _is_image(file: Path) -> bool:

@@ -341,6 +341,15 @@ describe("the Plugin's declarations", () => {
       for (const field of nodeType.profile ?? []) expect(fields).toContain(field);
   });
 
+  it("takes the Host's Allowed roots, which only the Host puts in a Task's settings", () => {
+    expect(plugin.roots).toBe(true);
+    // The Host writes each Task's reach at `settings.roots`, so a Worker that names it is refused.
+    for (const worker of Object.values(plugin.workers ?? {})) {
+      const schema = worker.settingsSchema as { properties?: Record<string, unknown> } | undefined;
+      expect(Object.keys(schema?.properties ?? {})).not.toContain("roots");
+    }
+  });
+
   it("takes a model folder on a Profile, as a start-up field both Node Types read", () => {
     const schema = plugin.profile?.schema as JsonSchema;
     expect(plugin.profile?.startup).toContain("modelDir");

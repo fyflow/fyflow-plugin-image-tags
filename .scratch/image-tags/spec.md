@@ -80,7 +80,11 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
   usual places), else `directml` on Windows, else `cpu`; never an error, `cpu` on any. A Profile overrides it (the
   Default Profile's for every Node), so one Flow can run some Nodes on the GPU and others on the CPU. The number of
   GPUs is the built-in `gpu` group's units (1 by default), set on the Resource Groups page. The README explains both.
-- Reads any image path it is given, like the video-thumbnail Plugin: no Allowed roots in v1.
+- Reads only what the Task's Allowed roots allow (fyflow-app's, ADR-0030; `roots: true`, SDK 0.11.0): each Node
+  Type checks its input `path` with `ctx.allowed_path(path, "read")` before reading anything, and reads where it really
+  leads. A refused path fails the Task with the check's message. `ClassifyFrames` also checks each image of a folder,
+  and skips one refused (a link leading out of the reach) with a warning. A sheet's `video` is metadata, never read,
+  so not checked; nor are `modelDir` (a Profile's own field) and the data directory.
 
 ### Input
 
@@ -247,4 +251,3 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 - Zero-shot models, detection, embeddings.
 - Pulling frames from video, and scene detection: the video-thumbnail Plugin's (and its service's) job.
 - Frame sheets inside a folder (read as plain images).
-- Allowed roots (a todo item: the `roots: true` opt-in of SDK 0.11.0).

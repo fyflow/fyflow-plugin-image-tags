@@ -85,6 +85,24 @@ One process per Profile runs two Tasks at once, so one Task's decoding and cutti
 | `renderTimestamps` | `false` | Drawn timestamps sit on the frames the models see (a warning says so). |
 | `skipBlankFrames` | `true` | A black or white frame says nothing. |
 
+## Allowed roots
+
+The Plugin reads only the folders a Profile allows it, its Allowed roots: it takes the Host's (`roots: true`), so
+until a Profile has a root with `read` access covering a path, every Task refuses it. Add one on the Profiles page:
+on the Profile's own roots, which every Plugin that takes them shares, or on this Plugin's own in its section, which
+add to the Profile's (and may leave the Profile's out). A Profile other than the Default one has the Default
+Profile's roots unless it sets its own.
+
+Each Task checks its `path` before reading anything, where the path really leads (links followed). A refused path
+fails the Task with why: `… has no Allowed roots for it yet. Add one with read access on the Profiles page`, or
+`… is outside every Allowed root with read access on this Profile`. A folder given to `ClassifyFrames` is checked,
+and so is each image read from it: a link in it that leads out of every root is skipped, with a `warnings` entry
+naming it (and if nothing else is left, the Task fails with why). A frame sheet's `video` is only handed on, never
+read, so it is not checked. The result's `path` is the path as given.
+
+The Plugin's data directory, where the models download, needs no root, nor does a Profile's `modelDir`: a Profile
+sets it itself.
+
 ## Resources
 
 Both Node Types hold what they use per process, not per Task: while its process lives (and for 5 s after its last

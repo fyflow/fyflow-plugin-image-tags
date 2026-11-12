@@ -336,6 +336,10 @@ export default definePlugin({
   },
   // Models are downloaded into it on first use: `<dataDir>/models/<repo>/<commit, 12 characters>/<name>/`.
   dataDir: true,
+  // The Host's Allowed roots (ADR-0030 in fyflow-app): each Task carries the folders its Profile lets it read, at
+  // `settings.roots`, and the Workers refuse every path outside them before reading it. So `settingsSchema` names no
+  // `roots`.
+  roots: true,
   profile: { schema: profileSchema, startup: ["modelDir", "batchSize"] },
   // Asked every few seconds while the Plugins page is open: a check that each model's file exists, nothing slower.
   status: ({ dataDir }) => modelsStatus(dataDir),
