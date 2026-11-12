@@ -244,7 +244,47 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 1. **Does `3d` catch the user's CG?** The eval set answers it; if not, a zero-shot model (CLIP/SigLIP) is the next
    candidate, as a catalogue model feeding the `style` preset's rule (its labels stay the same).
 
+## After v1: one Node Type per kind of answer
+
+Planned 2026-11-12, after 0.1.0. Not yet ticketed.
+
+A model fits the Plugin by the shape of its answer, not by what it is. One shared layer loads catalogue models and
+runs batched forward passes: model fetching, devices, builds, pools, frame reading and Allowed roots, most of which
+v1 has. On it sits one Node Type pair (an image and its frames) per kind of answer:
+
+| Answer | Node Types | Models |
+| --- | --- | --- |
+| one label | `ClassifyImage` / `ClassifyFrames` (v1) | `anime_real`, `anime_classification`; CLIP/SigLIP zero-shot |
+| many tags | `TagImage` / `TagFrames` | WD v3 taggers (SmilingWolf), JoyTag |
+| a vector | `EmbedImage` / `EmbedFrames` | OpenCLIP, SigLIP |
+| text | not this Plugin | vision-language models such as Gemma |
+
+- **Each model's preprocessing becomes its own,** in its catalogue entry: v1's single path (384×384) doesn't serve
+  WD's (448×448, padded square on white, BGR, NHWC, 0–255) or JoyTag's (448×448, CLIP mean/std, NCHW).
+- **Taggers** (`kind: "tagger"`, reserved in v1): an ONNX file, its tag list (WD's `selected_tags.csv`), its
+  preprocessing and its categories (WD: general, character, rating; JoyTag: general only). Each tag is scored on its
+  own (sigmoid), so the result is the tags over a threshold, `[{ name, score, category }]`, never every tag's score.
+  Node settings: `tagger`, a threshold per category (WD's usual: general about 0.35, character about 0.85), perhaps
+  `maxTags`. They act after the forward pass, so Tasks with different thresholds still share a batch. `TagFrames`
+  gives each frame its tags and a summary over the frames: each tag's share of frames, or its mean score. Ratings
+  may be their own small output, for routing in a Flow. JoyTag ships as PyTorch: export it to ONNX, or pin a
+  conversion. The models are about 380 MB (WD ViT, SwinV2) to 1.2 GB (WD EVA02-large), so slow per frame on a CPU.
+- **Zero-shot classification** (CLIP/SigLIP) is a `classifier` of `ClassifyImage`, no new Node Type: with prompts
+  fixed in the catalogue, the text side's vectors are computed once; with labels a Node sets, the text encoder
+  runs in the Worker too, and the settings depend on the chosen classifier (see "Settings that depend on the chosen
+  model" in `todo.md`). It is the candidate for CG vs live action (Open Question 1).
+- **Embeddings:** a vector per frame (512 to 1152 numbers) and one pooled over the frames, for similarity,
+  duplicates and clustering. A Flow needs somewhere to keep them, which fyflow has nothing for yet.
+- **Vision-language models** generate text: a tokenizer, a decoding loop, several GB, an engine other than one
+  batched forward pass (onnxruntime-genai, llama.cpp, a local server such as Ollama). They take seconds per frame and
+  vary run to run. Their own Plugin, with a `prompt` setting, e.g. calling a local model server.
+- **Licences to check per model before picking it:** the WD v3 taggers' and JoyTag's model cards (believed
+  Apache-2.0), each OpenCLIP checkpoint's (the code is MIT, the weights vary), SigLIP's (Apache-2.0), and Gemma's
+  own terms. The README's "Licence and credits" names each one shipped.
+
 ## Out of Scope
+
+For v1; "After v1" above plans the first three.
 
 - Taggers and any multi-label output (the catalogue reserves `kind: "tagger"`).
 - Models a user adds by hand beyond `modelDir`'s copies of catalogue entries.
