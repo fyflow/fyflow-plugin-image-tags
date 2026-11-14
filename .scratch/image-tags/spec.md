@@ -278,6 +278,25 @@ v1 has. On it sits one Node Type pair (an image and its frames) per kind of answ
 - **Vision-language models** generate text: a tokenizer, a decoding loop, several GB, an engine other than one
   batched forward pass (onnxruntime-genai, llama.cpp, a local server such as Ollama). They take seconds per frame and
   vary run to run. Their own Plugin, with a `prompt` setting, e.g. calling a local model server.
+- **TensorRT, later (agreed 2026-11-14):** a TensorRT engine builds when its session is made: minutes, every core,
+  several GB of RAM and much GPU memory, and it is tied to the GPU model, the TensorRT and ONNX Runtime versions, the
+  precision and the input shapes. So:
+  - **Built by its own Task,** a `PrepareTagger { tagger, precision }` Node Type, never by a Task waiting for an
+    answer, nor at environment sync or Worker start-up. Its pool holds the `gpu` unit and most or all of the `cpu`
+    group for the build's minutes, so what fyflow books is what the build uses. It is visible, cancellable, and run
+    once from a small Flow or as a tagging Flow's first Node, where it ends at once when the engine exists.
+  - **Cached by everything it is tied to:** `engines/<model>/<GPU name + compute capability>/<TensorRT version>/`
+    `<precision>-b<maxBatch>/` beside `models/` in the Host's data folder, with ONNX Runtime's engine and timing caches
+    (`trt_engine_cache_enable`, `trt_engine_cache_path`, `trt_timing_cache_enable`), so a rebuild after a driver or
+    TensorRT update is quicker.
+  - **Inference never builds:** the tagging Worker uses TensorRT only with a cached engine of its key, else runs on
+    CUDA and says to run `PrepareTagger`.
+  - **Batch shapes:** a dynamic batch from 1 to `batchSize`, so `batchSize` is in the key and stays a Profile setting.
+  - **RAM:** fyflow has no memory group (`disk`, `cpu`, `gpu` only). Until it does, the build checks free memory first
+    and fails with a clear message; a `memory` group would be a request to fyflow-app.
+  - **A fourth build, `tensorrt`:** TensorRT's wheels add about 1-2 GB to the `cuda` environment, so `pickVariant`
+    never picks it; a Profile opts in.
+  - **Measure first:** CUDA in fp16 against TensorRT on a ViT tagger. TensorRT's usual gain there is about 1.5-3x.
 - **Licences to check per model before picking it:** the WD v3 taggers' and JoyTag's model cards (believed
   Apache-2.0), each OpenCLIP checkpoint's (the code is MIT, the weights vary), SigLIP's (Apache-2.0), and Gemma's
   own terms. The README's "Licence and credits" names each one shipped.
