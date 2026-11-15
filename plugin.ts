@@ -1,10 +1,17 @@
 // The image-tags Plugin: classifies images with small local ONNX models, in a Python Worker (ADR-0026 in fyflow-app;
-// fyflow-plugin-sdk 0.11.0). What it declares is here; the work is in `python/`, a uv project the Host makes an
-// environment of.
-import { existsSync } from "node:fs";
+// fyflow-plugin-sdk 0.11.0, and 0.12.0's `data()` for a Host that asks). What it declares is here; the work is in
+// `python/`, a uv project the Host makes an environment of.
+import { existsSync, readdirSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
-import { CPU_GROUP, definePlugin, GPU_GROUP, type PluginStatus } from "fyflow-plugin-sdk";
+import {
+  CPU_GROUP,
+  definePlugin,
+  GPU_GROUP,
+  type PluginData,
+  type PluginDataItem,
+  type PluginStatus,
+} from "fyflow-plugin-sdk";
 import { pickBuild } from "./pick-build.ts";
 
 /**
@@ -89,6 +96,58 @@ function modelsStatus(dataDir: string | undefined): PluginStatus {
       { label: "Not downloaded yet", value: missing.join(", ") },
       ...(dataDir === undefined ? [] : [{ label: "Models folder", value: join(dataDir, "models") }]),
     ],
+  };
+}
+
+/** A model version's folder below the models' folder, `<repo>/<commit, 12 characters>`: its file's place, cut short. */
+const versionFolderOf = (model: ModelFile): string =>
+  localPathOf(model).slice(0, -`/${model.name}/${model.file}`.length);
+
+/** The folders directly in `folder`, by name; none when it cannot be read. Links are not followed. */
+function foldersIn(folder: string): string[] {
+  try {
+    return readdirSync(folder, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name)
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * What the data directory holds, for the Host's Data link: an item per model version downloaded, each
+ * `models/<repo>/<commit, 12 characters>` folder there is. A catalogue model's downloads again when next used; one at
+ * a commit the catalogue no longer pins was left by an earlier version, and this one never reads it. A download's temp
+ * file (`.<file>.*.part`, left by one that was interrupted) is in its version's folder, so it has no item of its own:
+ * it goes with that version. Only directory listings, and nothing throws: a folder that cannot be read has no items.
+ */
+function modelsData(dataDir: string): PluginData {
+  const pinned = new Map(Object.entries(MODELS).map(([id, model]) => [versionFolderOf(model), id]));
+  const models = join(dataDir, "models");
+  const found = foldersIn(models).flatMap((owner) =>
+    foldersIn(join(models, owner)).flatMap((repo) =>
+      foldersIn(join(models, owner, repo)).map((commit) => `${owner}/${repo}/${commit}`),
+    ),
+  );
+  const itemOf = (folder: string): PluginDataItem => {
+    const at = folder.lastIndexOf("/");
+    const source = `${folder.slice(0, at)} at ${folder.slice(at + 1)}`;
+    const id = pinned.get(folder);
+    return id === undefined
+      ? {
+          path: `models/${folder}`,
+          label: `${source}: not used by this version`,
+          lost: "Nothing this version needs",
+        }
+      : { path: `models/${folder}`, label: `${id}: ${source}`, lost: "Downloads again when next used" };
+  };
+  // The catalogue's models first, in its order, then what earlier versions left.
+  const order = [...pinned.keys()];
+  const rank = (folder: string) => (order.includes(folder) ? order.indexOf(folder) : order.length);
+  return {
+    summary: "Downloaded models",
+    items: found.sort((a, b) => rank(a) - rank(b)).map(itemOf),
   };
 }
 
@@ -354,6 +413,10 @@ export default definePlugin({
   profile: { schema: profileSchema, startup: ["modelDir", "batchSize"] },
   // Asked every few seconds while the Plugins page is open: a check that each model's file exists, nothing slower.
   status: ({ dataDir }) => modelsStatus(dataDir),
+  // Asked by a Host of SDK 0.12 or later when someone opens the Plugin's Data link (a Host before never asks): what the
+  // data directory holds, which the Host measures and deletes when a person asks. Workers download a deleted model
+  // again, as on a first run.
+  data: ({ dataDir }) => modelsData(dataDir),
   workers: {
     classifyImage: {
       python: "image_tags.worker:ClassifyImage",

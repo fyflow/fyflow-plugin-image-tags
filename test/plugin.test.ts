@@ -25,6 +25,7 @@ import plugin, {
   DEFAULT_CLASSIFIER,
   localPathOf,
   MODELS,
+  type ModelFile,
   RESIDENT_GROUPS,
 } from "../plugin.ts";
 
@@ -399,5 +400,117 @@ describe("the Plugin's status", () => {
 
     expect(status.level).toBe("ok");
     for (const id of Object.keys(MODELS)) expect(status.summary).toContain(id);
+  });
+});
+
+describe("the Plugin's data", () => {
+  let dataDir: string;
+  afterEach(() => rmSync(dataDir, { recursive: true, force: true }));
+
+  const dataOf = async () => {
+    if (plugin.data === undefined) throw new Error("no data()");
+    return await plugin.data({ dataDir });
+  };
+
+  /** A model's file in the data directory, as a download leaves it. */
+  const downloaded = (model: ModelFile) => {
+    const file = join(dataDir, "models", localPathOf(model));
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "a model");
+  };
+
+  /** A model's folder in the data directory, at a commit the catalogue does not pin, as an earlier version left it. */
+  const OLD = { ...(MODELS.anime_real as ModelFile), commit: "0123456789abcdef0123456789abcdef01234567" };
+
+  it("has no items without a models folder", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+
+    const data = await dataOf();
+
+    expect(data.items).toEqual([]);
+    expect(data.summary).toBe("Downloaded models");
+  });
+
+  it("has an item per downloaded catalogue model, by its id and source, which downloads again", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    for (const model of Object.values(MODELS)) downloaded(model);
+
+    const { items } = await dataOf();
+
+    expect(items).toEqual(
+      Object.entries(MODELS).map(([id, { repo, commit }]) => ({
+        path: `models/${repo}/${commit.slice(0, 12)}`,
+        label: `${id}: ${repo} at ${commit.slice(0, 12)}`,
+        lost: "Downloads again when next used",
+      })),
+    );
+    expect(items[0]?.label).toBe("anime_real: deepghs/anime_real_cls at 097a6c1e9e62");
+  });
+
+  it("lists only the models on disk", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    downloaded(MODELS.anime_classification as ModelFile);
+
+    const { items } = await dataOf();
+
+    expect(items.map(({ path }) => path)).toEqual(["models/deepghs/anime_classification/5ee62e06f5f4"]);
+  });
+
+  it("marks a commit the catalogue no longer pins as not used by this version", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    downloaded(MODELS.anime_real as ModelFile);
+    downloaded(OLD);
+
+    const { items } = await dataOf();
+
+    expect(items).toContainEqual({
+      path: "models/deepghs/anime_real_cls/0123456789ab",
+      label: "deepghs/anime_real_cls at 0123456789ab: not used by this version",
+      lost: "Nothing this version needs",
+    });
+    expect(items).toHaveLength(2);
+  });
+
+  it("has no item for a download's leftover temp file", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    const folder = join(dataDir, "models", localPathOf(MODELS.anime_real as ModelFile), "..");
+    mkdirSync(folder, { recursive: true });
+    writeFileSync(join(folder, ".model.onnx.abc123.part"), "half a model");
+
+    const { items } = await dataOf();
+
+    // The commit's folder is there, so it is listed, temp file and all; nothing names the temp file itself.
+    expect(items.map(({ path }) => path)).toEqual(["models/deepghs/anime_real_cls/097a6c1e9e62"]);
+  });
+
+  it("gives every item a relative, /-separated path inside the data directory", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    for (const model of [...Object.values(MODELS), OLD]) downloaded(model);
+    // Files where folders are expected are no model's.
+    writeFileSync(join(dataDir, "models", "stray.txt"), "");
+    writeFileSync(join(dataDir, "models", "deepghs", "stray.txt"), "");
+
+    const { items } = await dataOf();
+
+    expect(items).toHaveLength(3);
+    for (const { path } of items) {
+      expect(path).toMatch(/^models\/[^/\\]+\/[^/\\]+\/[^/\\]+$/);
+      expect(path.split("/")).not.toContain("..");
+      expect(existsSync(join(dataDir, ...path.split("/")))).toBe(true);
+    }
+  });
+
+  it("answers without throwing when the models folder cannot be read", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    // A file where the models folder should be: listing it fails.
+    writeFileSync(join(dataDir, "models"), "");
+
+    await expect(dataOf()).resolves.toEqual({ summary: "Downloaded models", items: [] });
+  });
+
+  it("answers without throwing for a data directory that is not there", async () => {
+    dataDir = join(tmpdir(), "image-tags-missing", "nowhere");
+
+    await expect(dataOf()).resolves.toMatchObject({ items: [] });
   });
 });

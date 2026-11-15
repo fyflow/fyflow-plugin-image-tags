@@ -1,5 +1,7 @@
 """How `ClassifyImage` gets its models under real use: Tasks at once, Cancel, a bad file, and an offline machine."""
 
+import shutil
+
 import pytest
 
 from image_tags.catalogue import MODELS
@@ -93,6 +95,17 @@ def test_after_a_cancelled_download_the_next_task_downloads_again(hub, config):
     hub.release()
 
     assert run(worker, image_task())["tag"] == "anime"
+    assert hub.requests == [MODEL_URL, MODEL_URL]
+
+
+def test_a_model_deleted_between_workers_downloads_again_as_on_a_first_run(hub, config, data_dir):
+    # The Host's Data link deletes a model's version folder once it has stopped the Workers; the next one starts fresh.
+    assert run(ClassifyImage(config), image_task())["tag"] == "anime"
+    version = data_dir / "models" / MODEL.local_path.rsplit("/", 2)[0]
+    shutil.rmtree(version)
+
+    assert run(ClassifyImage(config), image_task())["tag"] == "anime"
+    assert (data_dir / "models" / MODEL.local_path).is_file()
     assert hub.requests == [MODEL_URL, MODEL_URL]
 
 

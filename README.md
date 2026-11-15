@@ -3,7 +3,8 @@
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
 CG or live action, of one image or of a whole video from its frames (see `.scratch/image-tags/spec.md`).
 
-Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv). Install it from **Browse** on the
+Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv); 0.12.0 or later adds the
+[Data](#data) link. Install it from **Browse** on the
 app's Plugins page (the official Plugin repository), or upload the `.tgz` of a
 [Release](https://github.com/fyflow/fyflow-plugin-image-tags/releases). The Host makes the Plugin's Python environment
 from `python/uv.lock` on install; nothing else is set up by hand. Before the first Task, give a Profile a read
@@ -183,6 +184,16 @@ waited on it with `Could not get the model <id>:` and leaves nothing behind; the
 The Plugin's status on the Plugins page says which models are in its data directory: `ok` once all are, else
 "Models download on first use" with the missing ones. It looks only in the data directory, not in a Profile's model
 folder (a Plugin's status is not handed the Profile).
+
+### Data
+
+On a Host with `fyflow-plugin-sdk` 0.12.0 or later, the Plugin's card on the Plugins page has a **Data** link. It
+lists each model version in the data directory's `models` folder with its size: a catalogue model by its id and source
+(`anime_real: deepghs/anime_real_cls at 097a6c1e9e62`), and a model at a commit this version no longer pins, left by
+an earlier version, as not used by this version. Any of them can be deleted there, or the whole folder. Deleting a
+model only costs a download: the Host stops the Plugin's Workers first, and the next Task that needs it downloads it
+again. After an update, a model marked not used by this version can be cleared there. A Profile's `modelDir` is
+outside the data directory, so it is never listed or deleted.
 
 ### Without internet: `modelDir`
 

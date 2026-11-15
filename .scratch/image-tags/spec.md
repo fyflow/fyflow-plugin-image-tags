@@ -151,6 +151,12 @@ ListFolder → VideoFiles → map(entries) → VideoThumbnail (frame sheet) → 
 - Profile start-up field `modelDir`: a folder holding the same layout, for an offline machine. When set, nothing is
   downloaded and a missing model fails the Task, naming the folder.
 - `status()`: `ok` with the models present, or `info` "Models download on first use" with the missing ones listed.
+- `data()` (SDK 0.12; the peer range stays `^0.11.0`, since a Host before 0.12 never asks): an item per
+  `models/<repo>/<commit, first 12 characters>` folder on disk, which the Host shows behind the Plugin's Data link
+  with its size and deletes when a person asks. A catalogue model's is labelled with its id and source and downloads
+  again when next used; a commit the catalogue no longer pins is labelled as not used by this version. So the person
+  clears what an earlier version left: the Plugin prunes nothing at start, and there is no `ClearModelCache` Node
+  Type. A Profile's `modelDir` is outside the data directory, so it is never listed or deleted.
 - The deepghs repos are tagged OpenRAIL: fine to download for the user's own use; read before ever bundling the
   files into the Plugin folder.
 
@@ -289,6 +295,7 @@ v1 has. On it sits one Node Type pair (an image and its frames) per kind of answ
     `<precision>-b<maxBatch>/` beside `models/` in the Host's data folder, with ONNX Runtime's engine and timing caches
     (`trt_engine_cache_enable`, `trt_engine_cache_path`, `trt_timing_cache_enable`), so a rebuild after a driver or
     TensorRT update is quicker.
+    `data()` lists each engine folder too, so a person can clear the engines of a GPU or version no longer used.
   - **Inference never builds:** the tagging Worker uses TensorRT only with a cached engine of its key, else runs on
     CUDA and says to run `PrepareTagger`.
   - **Batch shapes:** a dynamic batch from 1 to `batchSize`, so `batchSize` is in the key and stays a Profile setting.
