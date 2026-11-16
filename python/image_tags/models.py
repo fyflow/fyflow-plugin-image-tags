@@ -191,6 +191,9 @@ class _Download:
                 self._waiters.discard(waiter)
         if self._error is not None:
             raise ModelUnavailable(self.model, self._error.reason)
+        if ctx is not None:
+            # Whole, so the Task's progress does not stay at the last chunk while it goes on to what comes next.
+            ctx.progress(1.0, message)
 
 
 class Models:
@@ -231,7 +234,8 @@ class Models:
 
     def session(self, model: Model, ctx=None) -> ort.InferenceSession:
         """The model's inference session, made on first use, once the model's file is there: downloaded if need be,
-        with progress and Cancel through the Task's `ctx`."""
+        with progress and Cancel through the Task's `ctx` (`None` for a caller without a Task), which is also told when
+        the session is being made, and where."""
         session = self._sessions.get(model.id)
         if session is not None:
             return session
@@ -240,6 +244,8 @@ class Models:
             session = self._sessions.get(model.id)
             if session is None:
                 chosen = devices.providers(ort.get_available_providers(), self.device)
+                if ctx is not None:
+                    ctx.progress(0.0, f"Loading the model {model.id} on {devices.name_of(chosen)}")
                 devices.prepare(chosen)
                 session = ort.InferenceSession(
                     str(path),

@@ -24,6 +24,9 @@ GPU_PROVIDERS = (CUDA, DIRECTML)
 
 Providers = list[tuple[str, dict]]
 
+#: What a Task's progress calls each provider.
+_NAMES = {CUDA: "CUDA", DIRECTML: "DirectML", CPU: "the CPU"}
+
 _preloaded = threading.Lock()
 _preload_done = False
 
@@ -46,6 +49,12 @@ def providers(available: Iterable[str], device: int) -> Providers:
                 options = {"performance_preference": "high_performance", "device_filter": "gpu"}
             return [(provider, options), (CPU, {})]
     return [(CPU, {})]
+
+
+def name_of(chosen: Providers) -> str:
+    """The provider a session is made for (the first chosen), as a person reads it: "CUDA", "DirectML", "the CPU"."""
+    provider = chosen[0][0]
+    return _NAMES.get(provider, provider)
 
 
 def session_options(chosen: Providers, threads: int) -> ort.SessionOptions:

@@ -111,7 +111,15 @@ class ClassifyImage(_Classify):
         classifier = self._classifier(task)
         loop = asyncio.get_running_loop()
         sheet, inputs = await loop.run_in_executor(self._blocking, self._read, path, classifier, ctx)
-        rows = await asyncio.gather(*(self._row(model, inputs[model.size], ctx) for model in classifier.models))
+        # Each model's session first, downloading the model if need be: blocking, so on a thread. A Cancel ends this
+        # await at once; the download, which looks at `ctx.cancelled`, stops once no Task waits on it.
+        await asyncio.gather(
+            *(loop.run_in_executor(self._blocking, self.models.session, model, ctx) for model in classifier.models)
+        )
+        # From the Task's own coroutine, not the batches it shares: the first forward pass may be slow (cuDNN searches
+        # for its algorithms then).
+        ctx.progress(0.0, "Classifying")
+        rows = await asyncio.gather(*(self._row(model, inputs[model.size]) for model in classifier.models))
         scores = classifier.score({model.id: row[np.newaxis] for model, row in zip(classifier.models, rows)})[0]
 
         result = {"path": path}
@@ -133,11 +141,8 @@ class ClassifyImage(_Classify):
         inputs = {model.size: to_input(rgb, model.size) for model in classifier.models}
         return sheet, inputs
 
-    async def _row(self, model: Model, input: np.ndarray, ctx) -> np.ndarray:
+    async def _row(self, model: Model, input: np.ndarray) -> np.ndarray:
         """`model`'s scores for one input, from a batch shared with the other Tasks that need the model."""
-        # Its session first, downloading the model if need be: blocking, so on a thread. A Cancel ends this await at
-        # once; the download, which looks at `ctx.cancelled`, stops once no Task waits on it.
-        await asyncio.get_running_loop().run_in_executor(self._blocking, self.models.session, model, ctx)
         return await self._batcher(model).score(input)
 
     def _batcher(self, model: Model) -> Batcher:
@@ -163,6 +168,10 @@ class ClassifyFrames(_Classify):
         min_confidence = task.settings.get("minConfidence")
         source = read_frames(path, ctx.allowed_path)
         total = len(source.frames)
+        # Each model's session first, so that loading it is said as such, then what the first batch does.
+        for model in classifier.models:
+            self.models.session(model, ctx)
+        ctx.progress(0.0, f"Classifying 0 of {total} frames")
 
         per_frame = []
         for start in range(0, total, self.batch_size):

@@ -47,11 +47,14 @@ def test_a_download_reports_its_progress_through_the_task(hub, config):
     hub.release()
     task.result()
 
-    fractions = [fraction for fraction, _ in task.ctx.progress_reports]
+    reports = [report for report in task.ctx.progress_reports if report[1] == "Downloading the model anime_real"]
+    fractions = [fraction for fraction, _ in reports]
     assert 0 < fractions[0] < 1
     assert fractions == sorted(fractions)
     assert all(0 < fraction <= 1 for fraction in fractions)
-    assert {message for _, message in task.ctx.progress_reports} == {"Downloading the model anime_real"}
+    assert fractions[-1] == 1.0
+    # Then the steps after it, each saying so (`test_progress.py`).
+    assert task.ctx.progress_reports[: len(reports)] == reports
 
 
 def test_a_cancelled_task_stops_at_once_and_its_download_leaves_no_file(hub, config, data_dir):
