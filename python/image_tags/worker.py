@@ -73,6 +73,10 @@ class _Classify:
             raise ValueError(f"No classifier `{name}`: one of {', '.join(CLASSIFIERS)}")
         return classifier
 
+    def teardown(self):
+        """The Worker ends (its process is about to): its models' sessions go. The shim may call it twice."""
+        self.models.close()
+
     def _score(self, classifier: Classifier, images: list[Image.Image], ctx) -> np.ndarray:
         """The classifier's scores for each image, `[len(images), len(labels)]`, from one batch per model."""
         inputs = {}  # by input size: models of the same size take the same tensor
@@ -154,6 +158,7 @@ class ClassifyImage(_Classify):
     def teardown(self):
         self._forward.shutdown(wait=False)
         self._blocking.shutdown(wait=False)
+        super().teardown()
 
 
 class ClassifyFrames(_Classify):

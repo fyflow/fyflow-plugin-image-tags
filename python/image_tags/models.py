@@ -14,6 +14,7 @@ With a model folder (the Profile's `modelDir`), for a machine without internet, 
 must be there already, in the same layout.
 """
 
+import gc
 import hashlib
 import os
 import sys
@@ -263,6 +264,14 @@ class Models:
         with self._run_lock:
             (output,) = session.run(["output"], {"input": batch})
         return output
+
+    def close(self) -> None:
+        """Drops every session, and with it its memory, on the GPU too: what a Worker ending does. A session asked for
+        afterwards is made again; closing twice does nothing more. A forward pass running meanwhile keeps its session
+        until it ends."""
+        with self._session_lock:
+            self._sessions.clear()
+        gc.collect()
 
     def _file(self, model: Model, ctx) -> Path:
         path = self.path_of(model)
