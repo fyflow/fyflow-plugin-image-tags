@@ -261,20 +261,13 @@ v1 has. On it sits one Node Type pair (an image and its frames) per kind of answ
 | Answer | Node Types | Models |
 | --- | --- | --- |
 | one label | `ClassifyImage` / `ClassifyFrames` (v1) | `anime_real`, `anime_classification`; CLIP/SigLIP zero-shot |
-| many tags | `TagImage` / `TagFrames` | WD v3 taggers (SmilingWolf), JoyTag |
+| many tags | `TagImage` / `TagFrames` | WD EVA02-large v3, PixAI v1.0 (fp32, fp16) |
 | a vector | `EmbedImage` / `EmbedFrames` | OpenCLIP, SigLIP |
 | text | not this Plugin | vision-language models such as Gemma |
 
 - **Each model's preprocessing becomes its own,** in its catalogue entry: v1's single path (384×384) doesn't serve
   WD's (448×448, padded square on white, BGR, NHWC, 0–255) or JoyTag's (448×448, CLIP mean/std, NCHW).
-- **Taggers** (`kind: "tagger"`, reserved in v1): an ONNX file, its tag list (WD's `selected_tags.csv`), its
-  preprocessing and its categories (WD: general, character, rating; JoyTag: general only). Each tag is scored on its
-  own (sigmoid), so the result is the tags over a threshold, `[{ name, score, category }]`, never every tag's score.
-  Node settings: `tagger`, a threshold per category (WD's usual: general about 0.35, character about 0.85), perhaps
-  `maxTags`. They act after the forward pass, so Tasks with different thresholds still share a batch. `TagFrames`
-  gives each frame its tags and a summary over the frames: each tag's share of frames, or its mean score. Ratings
-  may be their own small output, for routing in a Flow. JoyTag ships as PyTorch: export it to ONNX, or pin a
-  conversion. The models are about 380 MB (WD ViT, SwinV2) to 1.2 GB (WD EVA02-large), so slow per frame on a CPU.
+- **Taggers:** decided 2026-11-17 (grilled; tickets 13-17), see "Taggers" below.
 - **Zero-shot classification** (CLIP/SigLIP) is a `classifier` of `ClassifyImage`, no new Node Type: with prompts
   fixed in the catalogue, the text side's vectors are computed once; with labels a Node sets, the text encoder
   runs in the Worker too, and the settings depend on the chosen classifier (see "Settings that depend on the chosen
@@ -308,11 +301,52 @@ v1 has. On it sits one Node Type pair (an image and its frames) per kind of answ
   Apache-2.0), each OpenCLIP checkpoint's (the code is MIT, the weights vary), SigLIP's (Apache-2.0), and Gemma's
   own terms. The README's "Licence and credits" names each one shipped.
 
+## Taggers
+
+Decided 2026-11-17 in a grilling session; built by tickets 13-17. `TagImage` and `TagFrames` live in this Plugin.
+
+- **Models**, each its own catalogue entry (`kind: "tagger"`); a precision is its own model, so it has its own file,
+  sha256 and default thresholds:
+  - `wd-eva02-large` (the default): `SmilingWolf/wd-eva02-large-tagger-v3` at `c5303bb7139430db980e4c680a778fe79d72b541`
+    (tag `v1.0`), the official `model.onnx` (1,260,435,999 B, sha256 `9e768793…cc898bfc`), `selected_tags.csv`.
+    Input `input` `[b,448,448,3]`: padded square on white, bicubic, BGR, NHWC, 0-255. Output `output` `[b,10861]`,
+    already sigmoided. Categories general (0.35), character (0.85); 4 ratings.
+  - `pixai`, `pixai-fp16`: `pixai-labs/pixai-tagger-v1.0` (Apache-2.0) ships only safetensors; the ONNX is the
+    community conversion `Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8`, pinned, once ticket 15 has checked it against
+    the authors' pipeline (else our own export). Input `[b,3,1008,1008]`, RGB, NCHW, mean/std 0.5, long side resized
+    and padded black (bilinear upstream; the check settles it). Categories general (0.17), character (0.27),
+    copyright (0.24), style (0.15), meta (0.17); 4 ratings (0.41). fp32 1.98 GB, fp16 0.99 GB; int8 not listed.
+- **The catalogue entry** holds the repo, commit, ONNX file and sha256, a pinned tag-list file, the preprocessing (size,
+  padding colour, resize method, channel order, normalisation, layout), whether the output is already sigmoided, and
+  the categories with their default thresholds. `data()`, `status()` and `cache` cover taggers like the classifiers.
+- **Runtime:** ONNX Runtime only, no PyTorch in the environment. Taggers have their own Workers and pools, taking turns
+  on the `gpu` unit. Models download on first use (the README says each is over 1 GB). The CPU is allowed with a
+  warning (which names fp16 on the CPU as slow). A tagger that doesn't fit in GPU memory fails the Task with a clear
+  message (a smaller tagger, a smaller `tagBatchSize`, or the `cpu` build); no automatic fallback to the CPU.
+- **Settings:** `tagger` (enum of the ids, default `wd-eva02-large`); `thresholds`, an open object
+  (`additionalProperties: true`, each category any tagger has listed as a number 0-1, since fyflow admits no schema there) merged over the chosen model's defaults, so `{ "character": 0.5 }`
+  changes only that one; a key the model doesn't have fails the Task, naming its categories; the description lists
+  each model's defaults; `maxTags`, optional integer. All act after the forward pass, so Tasks with different settings
+  share batches. Profile start-up field `tagBatchSize`, default 4, separate from `batchSize`.
+- **Result:** `tags: [{ name, score, category }]`, those over their threshold, highest first, names unchanged,
+  categories named by the model (a category the model lacks has no tags); `rating: { label, scores }`, or `null` for a
+  model without one. `TagFrames`: `frames: [{ timestamp, tags, rating }]`, per frame only.
+- **Input:** `TagImage` one image, its Tasks sharing batches through `batcher.py`. `TagFrames` reads frames with
+  `ClassifyFrames`' reader: a frame sheet (with timestamps), a folder (by name, no timestamps, up to 1000) or one image.
+  Other Plugins' manifests are not read: if time matters later, a frame list `[{path, timestamp}]` passed in by the
+  Flow is the format-neutral way.
+- **Summaries** over frames are a later, model-free `SummarizeTags` Node Type, grilled once `TagFrames` has run on real
+  sheets.
+- **Tests:** golden results per model against its reference pipeline (WD: the Space's `app.py` preprocessing; PixAI:
+  the authors' `tagger_pipeline.py` in a throwaway PyTorch environment), marked slow and skipped without the model.
+- **README:** a "Taggers" section: authors, repos, pinned commits, licences (Apache-2.0, and the conversion's), sizes,
+  how thresholds merge.
+
 ## Out of Scope
 
 For v1; "After v1" above plans taggers, zero-shot models and embeddings.
 
-- Taggers and any multi-label output (the catalogue reserves `kind: "tagger"`).
+- Taggers and any multi-label output (the catalogue reserves `kind: "tagger"`); planned in "Taggers" above.
 - Models a user adds by hand beyond `modelDir`'s copies of catalogue entries.
 - Zero-shot models, detection, embeddings.
 - Pulling frames from video, and scene detection: the video-thumbnail Plugin's (and its service's) job.
