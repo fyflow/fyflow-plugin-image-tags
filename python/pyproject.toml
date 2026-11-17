@@ -1,6 +1,6 @@
 [project]
 name = "image-tags"
-version = "0.2.1"
+version = "0.3.0"
 description = "The Python half of the image-tags Plugin: classifiers run with ONNX Runtime"
 # Capped at the newest Python every locked ONNX Runtime build has wheels for (cp312 to cp314 in 1.31.1): the Host's uv
 # takes the newest managed Python this allows, and with no cap a new Python (3.15) leaves the build uninstallable.
