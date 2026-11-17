@@ -23,7 +23,7 @@ from .catalogue import (
     thresholds_of,
 )
 from .devices import device_of
-from .frames import SHEET_AS_ONE_IMAGE, Frames, read_frames, sheet_of
+from .frames import SHEET_AS_ONE_IMAGE, SHEET_TAGGED_AS_ONE_IMAGE, Frames, read_frames, sheet_of
 from .models import Cancelled, Models
 from .preprocess import Preprocessing, open_image, to_input, to_rgb
 
@@ -90,6 +90,22 @@ def _frame_by_frame(
         done = start + len(batch)
         ctx.progress(done / total, f"{did} {done} of {total} frames")
     return np.concatenate(rows)
+
+
+def _image_result(path: str, sheet: dict | None) -> dict:
+    """The start of an image Task's result: the path it was given, then the video of a frame sheet that names one."""
+    result = {"path": path}
+    if sheet is not None and isinstance(sheet.get("video"), str):
+        result["video"] = sheet["video"]
+    return result
+
+
+def _read_image(path: str, ctx) -> tuple[Image.Image, dict | None]:
+    """The image at `path` in RGB, and its frame-sheet metadata (`None` unless it is a sheet). It is read where its
+    path really leads, once the Task's reach allows it: the check looks at the disk, so a Task calls this off the event
+    loop."""
+    image = open_image(ctx.allowed_path(path, "read"))
+    return to_rgb(image), sheet_of(image)
 
 
 def _frames_result(path: str, source: Frames, fields: dict, warnings: list[str] | None = None) -> dict:
@@ -222,9 +238,7 @@ class ClassifyImage(_Classify):
         )
         scores = classifier.score({model.id: row[np.newaxis] for model, row in zip(classifier.models, rows)})[0]
 
-        result = {"path": path}
-        if sheet is not None and isinstance(sheet.get("video"), str):
-            result["video"] = sheet["video"]
+        result = _image_result(path, sheet)
         result.update(answer(classifier, scores, task.settings.get("minConfidence")))
         if sheet is not None:
             result["warnings"] = [SHEET_AS_ONE_IMAGE]
@@ -233,11 +247,8 @@ class ClassifyImage(_Classify):
     @staticmethod
     def _read(path: str, classifier: Classifier, ctx) -> tuple[dict | None, dict[Preprocessing, np.ndarray]]:
         """The image's frame-sheet metadata (`None` unless it is a sheet), and its input for each way the classifier's
-        models take an image. The image is read where its path really leads, once the Task's reach allows it: the
-        check looks at the disk, so it is here, off the event loop."""
-        image = open_image(ctx.allowed_path(path, "read"))
-        sheet = sheet_of(image)
-        rgb = to_rgb(image)
+        models take an image."""
+        rgb, sheet = _read_image(path, ctx)
         inputs = {model.preprocessing: to_input(rgb, model.preprocessing) for model in classifier.models}
         return sheet, inputs
 
@@ -302,8 +313,12 @@ class _Tag(_Worker):
     @staticmethod
     def _settings(task, tagger: Tagger) -> tuple[dict[str, float], int | None]:
         """The Task's thresholds, merged over the tagger's defaults, and its `maxTags`. Called before anything is read
-        or downloaded, so a threshold the tagger has no category for fails the Task at once."""
-        return thresholds_of(tagger, task.settings.get("thresholds")), task.settings.get("maxTags")
+        or downloaded, so a threshold the tagger has no category for, or a `maxTags` below 1, fails the Task at
+        once."""
+        max_tags = task.settings.get("maxTags")
+        if max_tags is not None and (isinstance(max_tags, bool) or not isinstance(max_tags, int) or max_tags < 1):
+            raise ValueError(f"`maxTags` is not a whole number of 1 or more: {max_tags!r}")
+        return thresholds_of(tagger, task.settings.get("thresholds")), max_tags
 
     def _ready(self, tagger: Tagger, ctx) -> Labels:
         """The tagger's tag list, then its session, each downloaded first if need be: so the model's download is the
@@ -320,7 +335,8 @@ class _Tag(_Worker):
 class TagImage(_Tag):
     """One image per Task, through one tagger of the catalogue (the `tagger` setting): the tags over their category's
     threshold (the `thresholds` setting, merged over the tagger's defaults), highest first, at most `maxTags`; and the
-    tagger's rating. Its path must be in the Task's reach (Allowed roots), else the Task fails saying why.
+    tagger's rating. A frame sheet is tagged as one image, with a warning. Its path must be in the Task's reach (Allowed
+    roots), else the Task fails saying why.
 
     The Tasks of a process run at once on the shim's event loop, as `ClassifyImage`'s do, and share the tagger's
     forward passes, `tagBatchSize` images at most to one: thresholds and `maxTags` act on the output, so Tasks with
@@ -334,7 +350,7 @@ class TagImage(_Tag):
         path = self._path(task)
         tagger = self._tagger(task)
         thresholds, max_tags = self._settings(task, tagger)
-        input = await self._passes.blocking(self._read, path, tagger, ctx)
+        sheet, input = await self._passes.blocking(self._read, path, tagger, ctx)
         # The tag list and the session, downloading either if need be: blocking, so on a thread. A Cancel ends this
         # await at once, as `ClassifyImage`'s.
         labels = await self._passes.blocking(self._ready, tagger, ctx)
@@ -342,15 +358,17 @@ class TagImage(_Tag):
         ctx.progress(0.0, "Tagging")
         row = await self._passes.row(tagger, input)
 
-        result = {"path": path, **tag(tagger, labels, row, thresholds, max_tags)}
-        if warnings := self._warnings(tagger):
+        result = _image_result(path, sheet)
+        result.update(tag(tagger, labels, row, thresholds, max_tags))
+        if warnings := [*([SHEET_TAGGED_AS_ONE_IMAGE] if sheet is not None else []), *self._warnings(tagger)]:
             result["warnings"] = warnings
         return result
 
     @staticmethod
-    def _read(path: str, tagger: Tagger, ctx) -> np.ndarray:
-        """The image as the tagger takes it, read where its path really leads once the Task's reach allows it."""
-        return to_input(to_rgb(open_image(ctx.allowed_path(path, "read"))), tagger.preprocessing)
+    def _read(path: str, tagger: Tagger, ctx) -> tuple[dict | None, np.ndarray]:
+        """The image's frame-sheet metadata (`None` unless it is a sheet), and the image as the tagger takes it."""
+        rgb, sheet = _read_image(path, ctx)
+        return sheet, to_input(rgb, tagger.preprocessing)
 
     def teardown(self):
         self._passes.close()

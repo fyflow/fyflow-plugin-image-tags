@@ -1,7 +1,6 @@
 // The image-tags Plugin: classifies images with small local ONNX models, and tags them with larger ones, in Python
-// Workers (ADR-0026 in fyflow-app;
-// fyflow-plugin-sdk 0.11.0, and 0.12.0's `data()` for a Host that asks). What it declares is here; the work is in
-// `python/`, a uv project the Host makes an environment of.
+// Workers (ADR-0026 in fyflow-app; fyflow-plugin-sdk 0.11.0, and 0.12.0's `data()` for a Host that asks). What it
+// declares is here; the work is in `python/`, a uv project the Host makes an environment of.
 import { existsSync, readdirSync } from "node:fs";
 import { availableParallelism } from "node:os";
 import { join } from "node:path";
@@ -139,17 +138,23 @@ const versionFolderOf = ({ repo, commit }: ModelFile): string => `${repo}/${comm
 export const localPathOf = (model: ModelFile): string =>
   [versionFolderOf(model), ...(model.name ? [model.name] : []), model.file].join("/");
 
+/** Every file the Plugin downloads, by what `status()` calls it: each model's, then each tagger's tag list. */
+const DOWNLOADED_FILES: ReadonlyArray<readonly [string, ModelFile]> = [
+  ...Object.entries(MODEL_FILES),
+  ...Object.entries(TAGGERS).map(
+    ([id, { model, tagList }]) => [`${id}'s ${tagList}`, { ...model, file: tagList }] as const,
+  ),
+];
+
 /**
- * Which models are in the data directory. It sees only the data directory: `status()` is handed no Profile, so a
- * model folder set on a Profile (`modelDir`) is not looked at.
+ * Which models, and taggers' tag lists, are in the data directory. It sees only the data directory: `status()` is
+ * handed no Profile, so a model folder set on a Profile (`modelDir`) is not looked at.
  */
 function modelsStatus(dataDir: string | undefined): PluginStatus {
   const ids = Object.keys(MODEL_FILES);
-  const missing = ids.filter(
-    (id) =>
-      dataDir === undefined ||
-      !existsSync(join(dataDir, "models", localPathOf(MODEL_FILES[id] as ModelFile))),
-  );
+  const missing = DOWNLOADED_FILES.filter(
+    ([, file]) => dataDir === undefined || !existsSync(join(dataDir, "models", localPathOf(file))),
+  ).map(([what]) => what);
   if (missing.length === 0) return { level: "ok", summary: `Models downloaded: ${ids.join(", ")}` };
   return {
     level: "info",
@@ -570,12 +575,15 @@ const tagOutputSchema = {
   required: ["path", "tagger", "tags", "rating"],
   properties: {
     path: { type: "string", description: "the image's absolute path" },
+    video: resultProperties.video,
     tagger: { type: "string", description: "the tagger that ran" },
     ...tagProperties,
     warnings: {
       type: "array",
       items: { type: "string" },
-      description: "what may make the answer less good or slower than it could be (a tagger run on the CPU)",
+      description:
+        "what may make the answer less good or slower than it could be (a frame sheet tagged as one image, which " +
+        "TagFrames tags frame by frame; a tagger run on the CPU)",
     },
   },
   examples: [

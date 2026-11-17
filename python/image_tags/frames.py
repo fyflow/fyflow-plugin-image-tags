@@ -34,6 +34,10 @@ SHEET_AS_ONE_IMAGE = (
     "This is a frame sheet, scored here as one image (the whole collage): ClassifyFrames classifies its frames one by "
     "one"
 )
+#: `TagImage`'s warning of a frame sheet, as `ClassifyImage`'s.
+SHEET_TAGGED_AS_ONE_IMAGE = (
+    "This is a frame sheet, tagged here as one image (the whole collage): TagFrames tags its frames one by one"
+)
 
 
 @dataclass

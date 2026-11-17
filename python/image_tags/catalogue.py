@@ -45,6 +45,8 @@ class Pinned:
     `<repo>/<commit, 12 characters>/[<name>/]<file>` below the models' folder. The commit is cut to 12 characters,
     which still names it, to stay under Windows' 260-character paths when long paths are off."""
 
+    #: The catalogue id of the model the file is, or (a tag list) of the tagger it goes with.
+    id: str
     repo: str
     commit: str
     #: The folder in the repo the file is in; empty for the repo's top.
@@ -55,7 +57,7 @@ class Pinned:
     @property
     def subject(self) -> str:
         """What a person reads the file as, in a message: "the model anime_real"."""
-        raise NotImplementedError
+        return f"the model {self.id}"
 
     @property
     def remote_path(self) -> str:
@@ -91,10 +93,6 @@ class Model(Pinned):
     file: str = "model.onnx"
     #: A raw model never answers `uncertain` unless a Node asks for a `minConfidence`.
     min_confidence: float = 0.0
-
-    @property
-    def subject(self) -> str:
-        return f"the model {self.id}"
 
     @property
     def models(self) -> tuple["Model", ...]:
@@ -228,7 +226,8 @@ class TagList(Pinned):
     """A tagger's tag list, beside its model: `selected_tags.csv`'s format, a row per output (`tag_id`, `name`,
     `category`, `count`), in the output's order."""
 
-    tagger: str
+    #: The tagger's.
+    id: str
     repo: str
     commit: str
     name: str
@@ -237,7 +236,7 @@ class TagList(Pinned):
 
     @property
     def subject(self) -> str:
-        return f"the tag list of {self.tagger}"
+        return f"the tag list of {self.id}"
 
 
 @dataclass(frozen=True)
@@ -285,10 +284,6 @@ class Tagger(Pinned):
     #: whose tag list names them otherwise than WD's `general`, `sensitive`, `questionable` and `explicit`: so a Flow
     #: that routes on the rating works with any tagger. Empty to keep the tag list's names and order.
     rating_names: tuple[tuple[str, str], ...] = ()
-
-    @property
-    def subject(self) -> str:
-        return f"the model {self.id}"
 
     @property
     def tag_list(self) -> TagList:
@@ -427,6 +422,10 @@ def tag(
     if tagger.rating_code is not None:
         rated = {labels.names[i]: float(scores[i]) for i in np.flatnonzero(codes == tagger.rating_code)}
         if tagger.rating_names:
+            if lacking := [theirs for theirs, _ in tagger.rating_names if theirs not in rated]:
+                raise ValueError(
+                    f"The tag list of {tagger.id} has no rating `{lacking[0]}`: its ratings are {', '.join(rated)}"
+                )
             rated = {ours: rated[theirs] for theirs, ours in tagger.rating_names}
         rating = {"label": max(rated, key=rated.get), "scores": rated}
     return {"tagger": tagger.id, "tags": tags, "rating": rating}

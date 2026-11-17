@@ -511,6 +511,28 @@ describe("TagImage", () => {
     expect(findings(outputSchema, { ...result, rating: { label: "general" } })).not.toEqual([]);
   });
 
+  it("hands on a frame sheet's video as ClassifyImage does, and warns that it tagged the sheet as one image", () => {
+    const tagImage = plugin.workers?.tagImage?.outputSchema as {
+      properties: Record<string, JsonSchema & { description?: string }>;
+    };
+    const properties = tagImage.properties;
+    const classifyImage = plugin.workers?.classifyImage?.outputSchema as {
+      properties: Record<string, JsonSchema>;
+    };
+    expect(properties.video).toEqual(classifyImage.properties.video);
+    expect(properties.warnings?.description).toContain("a frame sheet");
+    const result = {
+      path: "D:/Thumbnails/clip.jpg",
+      video: "D:/Videos/clip.mp4",
+      tagger: "wd-eva02-large",
+      tags: [],
+      rating: null,
+      warnings: ["This is a frame sheet, tagged here as one image"],
+    };
+    expect(findings(outputSchema, result)).toEqual([]);
+    expect(findings(outputSchema, { ...result, video: 1 })).not.toEqual([]);
+  });
+
   it("runs 16 Tasks at a time in one process, as many as its Worker makes room for", () => {
     const pool = plugin.nodeTypes?.TagImage?.pool;
     expect(pool).toMatchObject({ maxThreads: 1, maxConcurrentTasks: 16 });
@@ -603,18 +625,40 @@ describe("the Plugin's status", () => {
     for (const id of Object.keys(MODEL_FILES)) expect(JSON.stringify(status.details)).toContain(id);
   });
 
-  it("is ok once every model is in the data directory", async () => {
+  /** A file in the data directory's models folder, as a download leaves it. */
+  const downloaded = (model: ModelFile) => {
+    const file = join(dataDir, "models", localPathOf(model));
+    mkdirSync(join(file, ".."), { recursive: true });
+    writeFileSync(file, "a model");
+  };
+  /** Every tagger's tag list, kept beside its model. */
+  const tagLists = () => Object.values(TAGGERS).map(({ model, tagList }) => ({ ...model, file: tagList }));
+
+  it("is ok once every model and every tagger's tag list is in the data directory", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
-    for (const model of Object.values(MODEL_FILES)) {
-      const file = join(dataDir, "models", localPathOf(model));
-      mkdirSync(join(file, ".."), { recursive: true });
-      writeFileSync(file, "a model");
-    }
+    for (const model of Object.values(MODEL_FILES)) downloaded(model);
+    for (const tagList of tagLists()) downloaded(tagList);
 
     const status = await statusOf();
 
     expect(status.level).toBe("ok");
     for (const id of Object.keys(MODEL_FILES)) expect(status.summary).toContain(id);
+  });
+
+  it("names a tagger's tag list that is not there, though its model is", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    for (const model of Object.values(MODEL_FILES)) downloaded(model);
+    const { model, tagList } = TAGGERS["wd-eva02-large"];
+    for (const other of tagLists()) if (other.repo !== model.repo) downloaded(other);
+
+    const status = await statusOf();
+
+    expect(status.level).toBe("info");
+    expect(status.summary).toBe("Models download on first use");
+    expect(status.details).toContainEqual({
+      label: "Not downloaded yet",
+      value: `wd-eva02-large's ${tagList}`,
+    });
   });
 });
 

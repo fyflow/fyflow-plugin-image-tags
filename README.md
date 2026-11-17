@@ -94,15 +94,17 @@ One process per Profile runs two Tasks at once, so one Task's decoding and cutti
 ### `TagImage`
 
 One image per Task (`path` in its input), through one **tagger** (the `tagger` setting; see [Taggers](#taggers)),
-which scores every tag of its tag list. It hands on `{ path, tagger, tags, rating, warnings? }`:
+which scores every tag of its tag list. It hands on `{ path, video?, tagger, tags, rating, warnings? }`:
 
 - `tags`: `[{ name, score, category }]`, each tag whose score is over its category's threshold, the highest first.
   Names are the tagger's own (`long_hair`, `hatsune_miku`, underscores kept); categories are the tagger's
   (`general`, `character` for `wd-eva02-large`; also `copyright`, `style` and `meta` for PixAI).
 - `rating`: `{ label, scores }`: every rating's score (`general`, `sensitive`, `questionable`, `explicit`, whatever
   the tagger's own names for them) and the highest as the `label`; `null` for a tagger that rates nothing.
-- `warnings`: says so when the tagger ran on the CPU, where it is many times slower than on a GPU (and, for
-  `pixai-fp16`, that fp16 on the CPU is slow too: no quicker than fp32).
+- `video`: a frame sheet's video, as the sheet has it (as `ClassifyImage` hands it on).
+- `warnings`: says so when the image is a frame sheet, tagged as one image, and when the tagger ran on the CPU, where
+  it is many times slower than on a GPU (and, for `pixai-fp16`, that fp16 on the CPU is slow too: no quicker than
+  fp32).
 
 Settings, all applied to the tagger's output, so Tasks with different settings still share forward passes:
 
@@ -111,12 +113,13 @@ Settings, all applied to the tagger's output, so Tasks with different settings s
   lacks fails the Task, naming the ones it has. Defaults for `wd-eva02-large`: general 0.35, character 0.85 (its
   authors' Space's); for `pixai` and `pixai-fp16`: general 0.17, character 0.27, copyright 0.24, style 0.15, meta
   0.17 (its authors').
-- **`maxTags`**: the most tags handed on, the highest first; left empty, every tag over its threshold.
+- **`maxTags`**: the most tags handed on, the highest first, a whole number of 1 or more (anything else fails the
+  Task); left empty, every tag over its threshold.
 
 Like `ClassifyImage`, it is made for a Flow's `map`: one process per Profile runs up to 16 Tasks at once, and their
 images go through the tagger in shared batches of up to [`tagBatchSize`](#tagbatchsize) (4 unless the Profile says
-otherwise), a batch waiting at most 20 ms for more. A frame sheet is tagged as one image: `TagFrames` tags its frames
-one by one.
+otherwise), a batch waiting at most 20 ms for more. A frame sheet is tagged as one image, with a warning: `TagFrames` tags
+its frames one by one.
 
 ### `TagFrames`
 
@@ -237,8 +240,8 @@ need a model at once share one download; a cancelled Task stops waiting at once,
 every Task waiting on it is cancelled. A failed download, or a file that is not the pinned one, fails the Tasks that
 waited on it with `Could not get the model <id>:` and leaves nothing behind; the next Task tries again.
 
-The Plugin's status on the Plugins page says which models are in its data directory: `ok` once all are, else
-"Models download on first use" with the missing ones. It looks only in the data directory, not in a Profile's model
+The Plugin's status on the Plugins page says which models, and taggers' tag lists, are in its data directory: `ok`
+once all are, else "Models download on first use" with the missing ones. It looks only in the data directory, not in a Profile's model
 folder (a Plugin's status is not handed the Profile).
 
 ### Data
@@ -300,7 +303,10 @@ its fp16 one. The Plugin prepares an image as the authors' `RescalePadProcessor`
 conversion's README says): what is see-through made white, the long side resized to 1008 (in float, not in whole
 levels), centred on black, RGB, `(x - 0.5) / 0.5`. Checked against the authors' own pipeline on the test images,
 `pixai` is within about 0.002 of its scores and `pixai-fp16` within about 0.005, so both keep the authors'
-thresholds; the golden tests hold both to it (`pnpm golden:pixai`). One difference is kept on purpose: the authors'
+thresholds; the golden tests hold both to it. Their reference scores (`python/tests/fixtures/golden-pixai.json`) were
+made by the research script `.scratch/image-tags/research/pixai-reference.py`, which ran the authors' PyTorch pipeline
+(see `.scratch/image-tags/research/pixai-onnx-check.md`); `pnpm golden:pixai` is a port of it that has not been run
+yet. One difference is kept on purpose: the authors'
 pipeline ignores an RGB image's colour key, which the Plugin makes white, as for every model. `pixai-fp16` is half
 the size, for a GPU; on the CPU it is no quicker than `pixai`. The authors' rating threshold (0.41) is not used: the
 rating's `label` is always the highest, as for `wd-eva02-large`, and the ratings (`rating:g` and so on in the tag
@@ -332,7 +338,8 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 - `pnpm golden:pixai [-- --from <folder>]`: writes PixAI's top tags and ratings for the test images from its
   authors' own pipeline (`python/tests/fixtures/golden-pixai.json`), in an environment of its own with PyTorch for
   the CPU; it downloads about 2 GB of the authors' weights at their pinned commit (or takes them from `--from`) and
-  takes some 9 minutes. Run it by hand when PixAI's pins change.
+  should take some 9 minutes. Run it by hand when PixAI's pins change. It is a port of
+  `.scratch/image-tags/research/pixai-reference.py`, which made the file there now, and has not been run itself.
 - `pnpm eval`: measures the classifiers on labelled videos and images; run by hand before a release is tagged (see
   [Eval](#eval)).
 

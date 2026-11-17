@@ -23,7 +23,8 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
@@ -157,7 +158,8 @@ class _Download:
         return waiter
 
     def start(self) -> None:
-        threading.Thread(target=self._fetch, name=f"image-tags-download-{self.model.file}", daemon=True).start()
+        name = f"image-tags-download-{self.model.id}-{self.model.file}"
+        threading.Thread(target=self._fetch, name=name, daemon=True).start()
 
     def _fetch(self) -> None:
         try:
@@ -272,17 +274,13 @@ class Models:
                 if ctx is not None:
                     ctx.progress(0.0, f"Loading the model {model.id} on {devices.name_of(chosen)}")
                 devices.prepare(chosen)
-                try:
+                with _out_of_gpu_memory_said(model, chosen[0][0]):
                     session = ort.InferenceSession(
                         str(path),
                         devices.session_options(chosen, self.threads),
                         providers=[name for name, _ in chosen],
                         provider_options=[options for _, options in chosen],
                     )
-                except Exception as error:
-                    if chosen[0][0] != devices.CPU and devices.out_of_memory(error):
-                        raise OutOfGpuMemory(model) from None
-                    raise
                 self._sessions[model.id] = session
                 _say_where(model, session, chosen, self.device, self.variant)
             return session
@@ -291,13 +289,8 @@ class Models:
         """Each image's output, `[n, outputs]`: a classifier's label probabilities (they end in a softmax), a tagger's
         score per tag."""
         session = self.session(model, ctx)
-        with self._run_lock:
-            try:
-                (output,) = session.run([model.output], {"input": batch})
-            except Exception as error:
-                if session.get_providers()[0] != devices.CPU and devices.out_of_memory(error):
-                    raise OutOfGpuMemory(model) from None
-                raise
+        with self._run_lock, _out_of_gpu_memory_said(model, session.get_providers()[0]):
+            (output,) = session.run([model.output], {"input": batch})
         return output
 
     def close(self) -> None:
@@ -335,6 +328,18 @@ class Models:
         # Under the lock. An abandoned download may end after a new one has taken its place.
         if self._downloads.get(model.local_path) is fetching:
             del self._downloads[model.local_path]
+
+
+@contextmanager
+def _out_of_gpu_memory_said(model: Model | Tagger, provider: str) -> Iterator[None]:
+    """Makes what runs out of GPU memory in it `OutOfGpuMemory`, saying what to do, when `provider` (the session's) is
+    not the CPU's; any other failure is left as it is."""
+    try:
+        yield
+    except Exception as error:
+        if provider != devices.CPU and devices.out_of_memory(error):
+            raise OutOfGpuMemory(model) from None
+        raise
 
 
 def _say_where(

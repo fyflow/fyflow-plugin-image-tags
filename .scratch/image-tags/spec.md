@@ -318,7 +318,7 @@ Decided 2026-11-17 in a grilling session; built by tickets 13-17. `TagImage` and
     copyright (0.24), style (0.15), meta (0.17); 4 ratings (0.41). fp32 1.98 GB, fp16 0.99 GB; int8 not listed.
 - **The catalogue entry** holds the repo, commit, ONNX file and sha256, a pinned tag-list file, the preprocessing (size,
   padding colour, resize method, channel order, normalisation, layout), whether the output is already sigmoided, and
-  the categories with their default thresholds. `data()`, `status()` and `cache` cover taggers like the classifiers.
+  the categories with their default thresholds. `data()` and `status()` cover taggers like the classifiers.
 - **Runtime:** ONNX Runtime only, no PyTorch in the environment. Taggers have their own Workers and pools, taking turns
   on the `gpu` unit. Models download on first use (the README says each is over 1 GB). The CPU is allowed with a
   warning (which names fp16 on the CPU as slow). A tagger that doesn't fit in GPU memory fails the Task with a clear

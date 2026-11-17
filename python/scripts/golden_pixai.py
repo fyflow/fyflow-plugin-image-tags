@@ -20,7 +20,10 @@
 # url = "https://download.pytorch.org/whl/cpu"
 # explicit = true
 # ///
-"""Writes what PixAI v1.0 says of the test images, from its authors' own pipeline in PyTorch rather than the Plugin's
+"""Not run yet: a port of `.scratch/image-tags/research/pixai-reference.py`, the research script that made the
+`golden-pixai.json` there now with the authors' PyTorch pipeline (see the note beside it, `pixai-onnx-check.md`).
+
+Writes what PixAI v1.0 says of the test images, from its authors' own pipeline in PyTorch rather than the Plugin's
 code: `python/tests/fixtures/golden-pixai.json`, which the golden tests of `pixai` and `pixai-fp16` hold the Plugin
 to.
 

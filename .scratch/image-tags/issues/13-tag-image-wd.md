@@ -16,7 +16,7 @@ the `kind: "tagger"` catalogue entry, per-model preprocessing, thresholds merged
     character 0.85;
   - the output is already sigmoided.
 
-  Fetched by the same hardened fetching as the classifiers; listed by `data()` and `status()`; `cache` downloads it.
+  Fetched by the same hardened fetching as the classifiers; listed by `data()` and `status()`.
 - [x] **Per-model preprocessing** in the catalogue entry: size 448, padded to a square on white, bicubic, BGR, NHWC,
   0-255 float32. The classifiers' existing path moves into the same description with no change to their results:
   their golden tests still pass.
@@ -66,7 +66,7 @@ the `kind: "tagger"` catalogue entry, per-model preprocessing, thresholds merged
 - **The tag list downloads first,** with the same hardened fetching (sha256 `298633d9…41217`) and its own progress message.
 - **A tag is kept only when its score is above the threshold,** not equal to it, as in `app.py`.
 - **The result also has `path` and `tagger`.**
-- **A frame sheet is tagged as one image,** without ClassifyImage's sheet warning.
+- **A frame sheet is tagged as one image,** at first without ClassifyImage's sheet warning. Since review, TagImage hands on the sheet's `video` and warns that it tagged the sheet as one image (TagFrames tags its frames), as ClassifyImage does.
 - **Pool:** TagImage's pool runs up to 16 Tasks at once (`TAG_TASKS_AT_ONCE`).
 - **Shared code:** the batching machinery is shared with ClassifyImage.
 - **The out-of-GPU-memory message** also covers the classifiers, worded for them ("a smaller `batchSize`, or the `cpu` build"). Real CUDA out-of-memory errors weren't reproduced: detection matches ONNX Runtime's known error texts and is tested with a faked GPU session.

@@ -4,6 +4,7 @@ The Worker runs a stand-in tagger (`stand_in.py`) with `wd-eva02-large`'s input,
 scores are held to the reference pipeline's by `test_tag_image_golden.py`.
 """
 
+import threading
 from dataclasses import replace
 
 import numpy as np
@@ -15,6 +16,7 @@ from image_tags import devices, models
 from image_tags.catalogue import (
     ANIME_CLASSIFICATION,
     ANIME_REAL,
+    PIXAI,
     TAGGERS,
     WD_EVA02_LARGE,
     Category,
@@ -23,15 +25,17 @@ from image_tags.catalogue import (
     tag,
     thresholds_of,
 )
+from image_tags.frames import SHEET_TAGGED_AS_ONE_IMAGE
 from image_tags.models import Models
 from image_tags.preprocess import BGR, NCHW, NHWC, RGB, WHITE, Preprocessing, to_input
 from image_tags.worker import DEFAULT_TAG_BATCH_SIZE, TAG_TASKS_AT_ONCE, TagImage, ran_on_the_cpu
-from tests.conftest import IMAGES, Context, Running, Task, run, served, wait_until
+from tests.conftest import FIXTURES, IMAGES, Context, Running, Task, run, served, wait_until
 from tests.stand_in import TAG_LIST, lay_out
 from tests.test_classify_image_batching import ForwardPasses, lining_up
 
 IMAGE = IMAGES / "anime-02-train-window.jpg"
 FRAMES = sorted(path for path in IMAGES.glob("*-*.jpg"))
+SHEETS = FIXTURES / "sheets"
 RATINGS = ["general", "sensitive", "questionable", "explicit"]
 
 
@@ -85,6 +89,28 @@ def test_the_classifiers_preprocessing_is_imgutils_recipe_in_the_same_descriptio
     )
     assert ANIME_REAL.preprocessing == imgutils
     assert ANIME_CLASSIFICATION.preprocessing == imgutils
+
+
+def test_each_download_s_thread_is_named_by_its_model_and_file(monkeypatch, data_dir):
+    names = []
+    monkeypatch.setattr(models, "download", lambda *args: names.append(threading.current_thread().name))
+    files = Models(str(data_dir))
+
+    for pinned in (WD_EVA02_LARGE, WD_EVA02_LARGE.tag_list, PIXAI, PIXAI.tag_list):
+        files._file(pinned, None)
+
+    assert names == [
+        "image-tags-download-wd-eva02-large-model.onnx",
+        "image-tags-download-wd-eva02-large-selected_tags.csv",
+        "image-tags-download-pixai-model.onnx",
+        "image-tags-download-pixai-selected_tags.csv",
+    ]
+
+
+def test_a_tag_list_is_named_as_its_tagger_s_and_a_tagger_as_a_model():
+    assert WD_EVA02_LARGE.subject == "the model wd-eva02-large"
+    assert WD_EVA02_LARGE.tag_list.subject == "the tag list of wd-eva02-large"
+    assert ANIME_REAL.subject == "the model anime_real"
 
 
 # Preprocessing.
@@ -198,6 +224,25 @@ def test_a_tagger_without_ratings_rates_nothing_and_tags_its_rating_rows_as_noth
     assert {t["name"] for t in result["tags"]} == set(LABELS.names[4:])
 
 
+def test_ratings_named_otherwise_are_renamed_in_the_result_s_order():
+    renamed = replace(WD_EVA02_LARGE, rating_names=(("explicit", "e"), ("general", "g")))
+
+    result = tag(renamed, LABELS, SCORES, {"general": 0.35, "character": 0.85})
+
+    assert result["rating"]["label"] == "g"
+    assert list(result["rating"]["scores"]) == ["e", "g"]
+
+
+def test_a_rating_name_the_tag_list_lacks_fails_naming_the_tagger_and_the_name():
+    renamed = replace(WD_EVA02_LARGE, rating_names=(("general", "general"), ("rating:x", "explicit")))
+    lacks = (
+        r"^The tag list of wd-eva02-large has no rating `rating:x`: its ratings are general, sensitive, questionable, "
+        r"explicit$"
+    )
+    with pytest.raises(ValueError, match=lacks):
+        tag(renamed, LABELS, SCORES, {"general": 0.35, "character": 0.85})
+
+
 def test_a_tagger_whose_output_is_not_sigmoided_is_sigmoided_first():
     logits = replace(WD_EVA02_LARGE, sigmoided=False)
 
@@ -213,6 +258,7 @@ def test_tags_an_image(tagger_hub, config):
     result = run(TagImage(config), tag_task())
 
     assert result["path"] == str(IMAGE)
+    assert "video" not in result
     assert result["tagger"] == "stand-in"
     scores = [t["score"] for t in result["tags"]]
     assert scores == sorted(scores, reverse=True)
@@ -261,6 +307,26 @@ def test_max_tags_hands_on_the_highest_only(tagger_hub, config):
     result = run(worker, tag_task(thresholds={"general": 0, "character": 0}, maxTags=2))
 
     assert result["tags"] == every["tags"][:2]
+
+
+@pytest.mark.parametrize("max_tags", [0, -1, 1.5, "3", True])
+def test_max_tags_other_than_a_whole_number_of_1_or_more_fails_the_task_before_anything_downloads(
+    tagger_hub, config, max_tags
+):
+    with pytest.raises(ValueError, match=rf"^`maxTags` is not a whole number of 1 or more: {max_tags!r}$"):
+        run(TagImage(config), tag_task(maxTags=max_tags))
+
+    assert tagger_hub.requests == []
+
+
+def test_a_frame_sheet_is_tagged_as_one_image_with_its_video_and_a_warning(tagger_hub, config):
+    result = run(TagImage(config), tag_task(SHEETS / "sample.jpg"))
+
+    assert result["video"] == "sample.mp4"
+    assert list(result)[:2] == ["path", "video"]
+    assert "frames" not in result
+    assert result["warnings"] == [SHEET_TAGGED_AS_ONE_IMAGE, ran_on_the_cpu(TAGGERS["stand-in"])]
+    assert "TagFrames" in SHEET_TAGGED_AS_ONE_IMAGE
 
 
 def test_an_unknown_tagger_fails_naming_the_ones_there_are(tagger_hub, config):
