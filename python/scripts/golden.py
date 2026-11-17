@@ -100,7 +100,7 @@ def check_entry(model, onnx_file):
         sys.exit(f"{model.id}: meta.json's labels are {meta['labels']}, the catalogue's {list(model.labels)}")
     session = ort.InferenceSession(onnx_file, providers=["CPUExecutionProvider"])
     (given,) = session.get_inputs()
-    width, height = model.size
+    width, height = model.preprocessing.size
     # A graph that takes any height and width is fed 384×384 by imgutils, so the entry must say that.
     dims = given.shape[2:] if all(isinstance(dim, int) for dim in given.shape[2:]) else [384, 384]
     if given.name != "input" or isinstance(given.shape[0], int) or [given.shape[1], *dims] != [3, height, width]:

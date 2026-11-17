@@ -13,7 +13,7 @@ from concurrent.futures import Executor
 
 import numpy as np
 
-from .catalogue import Model
+from .catalogue import Model, Tagger
 from .models import Models
 
 #: How long a batch waits for more frames after its first one arrived.
@@ -33,7 +33,7 @@ class Batcher:
     """Batches `model`'s frames for `models.scores`, at most `size` to a batch, run on `executor`. Used from one event
     loop at a time."""
 
-    def __init__(self, model: Model, models: Models, executor: Executor, size: int):
+    def __init__(self, model: Model | Tagger, models: Models, executor: Executor, size: int):
         self.model = model
         self.size = size
         self._models = models
@@ -43,7 +43,7 @@ class Batcher:
         self._running: asyncio.Task | None = None
 
     async def score(self, input: np.ndarray) -> np.ndarray:
-        """`input`'s scores, `[len(labels)]`, from the next batch it goes in. What the batch raises, it raises."""
+        """`input`'s output row (its scores), from the next batch it goes in. What the batch raises, it raises."""
         loop = asyncio.get_running_loop()
         frame = _Frame(input, loop.time(), loop.create_future())
         self._waiting.append(frame)

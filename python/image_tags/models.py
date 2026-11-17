@@ -1,8 +1,9 @@
-"""Getting the catalogue's models: downloaded on first use, checked, and kept as inference sessions.
+"""Getting the catalogue's models: downloaded on first use, checked, and kept as inference sessions; and a tagger's tag
+list, downloaded and checked the same way.
 
-A model is fetched from its pinned commit over plain HTTPS into a temp file beside its place in the data directory,
-checked against its sha256, then renamed into `<dataDir>/models/<repo>/<commit, 12 characters>/<name>/`. So a
-half-written or unpinned file is never loaded, and two processes fetching at once cannot spoil each other's.
+A model (or tag list) is fetched from its pinned commit over plain HTTPS into a temp file beside its place in the data
+directory, checked against its sha256, then renamed into `<dataDir>/models/<repo>/<commit, 12 characters>/[<name>/]`.
+So a half-written or unpinned file is never loaded, and two processes fetching at once cannot spoil each other's.
 
 Within one process, the Tasks that need a model at once share one download, run on a thread of its own: a cancelled
 Task stops waiting at once without tearing the download from under the others (a `ClassifyFrames` Task gets the
@@ -29,7 +30,7 @@ import numpy as np
 import onnxruntime as ort
 
 from . import devices
-from .catalogue import Model
+from .catalogue import Labels, Model, Pinned, Tagger, labels_from_csv
 
 #: Where models come from: Hugging Face, or a mirror of it named the way `huggingface_hub` reads it.
 DEFAULT_ENDPOINT = "https://huggingface.co"
@@ -41,11 +42,19 @@ POLL_SECONDS = 0.1
 
 
 class ModelUnavailable(Exception):
-    """A model could not be had; it fails the Task that wanted it, and the next one tries again."""
+    """A model (or tag list) could not be had; it fails the Task that wanted it, and the next one tries again."""
 
-    def __init__(self, model: Model, reason: str):
-        super().__init__(f"Could not get the model {model.id}: {reason}")
+    def __init__(self, model: Pinned, reason: str):
+        super().__init__(f"Could not get {model.subject}: {reason}")
         self.reason = reason
+
+
+class OutOfGpuMemory(Exception):
+    """A model's session, or a forward pass, needed more GPU memory than there was: the Task fails, saying what to do.
+    It never falls back to the CPU."""
+
+    def __init__(self, model: Model | Tagger):
+        super().__init__(f"{model.id} needs more GPU memory than this GPU has: {model.out_of_gpu_memory}")
 
 
 class Cancelled(Exception):
@@ -65,7 +74,7 @@ def sha256_of(path) -> str:
 
 
 def download(
-    model: Model, endpoint: str, path: Path, on_chunk: Callable[[int, int | None], None] | None = None
+    model: Pinned, endpoint: str, path: Path, on_chunk: Callable[[int, int | None], None] | None = None
 ) -> None:
     """Fetches `model` from `endpoint` to `path`, which appears only once the whole file matches the pinned sha256.
 
@@ -126,7 +135,7 @@ class _Download:
     that would take it back.
     """
 
-    def __init__(self, model: Model, endpoint: str, path: Path, lock: threading.Lock, on_end: Callable[[], None]):
+    def __init__(self, model: Pinned, endpoint: str, path: Path, lock: threading.Lock, on_end: Callable[[], None]):
         self.model = model
         self._endpoint = endpoint
         self._path = path
@@ -148,7 +157,7 @@ class _Download:
         return waiter
 
     def start(self) -> None:
-        threading.Thread(target=self._fetch, name=f"image-tags-download-{self.model.id}", daemon=True).start()
+        threading.Thread(target=self._fetch, name=f"image-tags-download-{self.model.file}", daemon=True).start()
 
     def _fetch(self) -> None:
         try:
@@ -175,7 +184,7 @@ class _Download:
         """Waits for the download to end, reporting its progress through the Task. Raises `Cancelled` as soon as the
         Task is cancelled, and `ModelUnavailable` when the download failed: the same for every Task that waited."""
         ctx = waiter.ctx
-        message = f"Downloading the model {self.model.id}"
+        message = f"Downloading {self.model.subject}"
         reported = None
         try:
             while True:
@@ -186,7 +195,7 @@ class _Download:
                 if self._done.wait(POLL_SECONDS):
                     break
                 if waiter.cancelled:
-                    raise Cancelled(f"Cancelled while downloading the model {self.model.id}")
+                    raise Cancelled(f"Cancelled while downloading {self.model.subject}")
         finally:
             with self._lock:
                 self._waiters.discard(waiter)
@@ -223,17 +232,32 @@ class Models:
         self.root = self.model_dir or Path(data_dir) / "models"
         self.endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
         self._sessions: dict[str, ort.InferenceSession] = {}
+        self._labels: dict[str, Labels] = {}
         self._session_lock = threading.Lock()
         # One forward pass at a time in the process: the DirectML provider takes no concurrent `run` on a session, and
         # on the CPU each pass already spreads over the threads of the units the process holds.
         self._run_lock = threading.Lock()
         self._lock = threading.Lock()
+        # By the file's place, which tells a tagger's model and its tag list apart.
         self._downloads: dict[str, _Download] = {}
 
-    def path_of(self, model: Model) -> Path:
+    def path_of(self, model: Pinned) -> Path:
         return self.root / model.local_path
 
-    def session(self, model: Model, ctx=None) -> ort.InferenceSession:
+    def labels(self, tagger: Tagger, ctx=None) -> Labels:
+        """The tagger's tag list, read once its file is there: downloaded if need be, as `session` downloads a
+        model."""
+        labels = self._labels.get(tagger.id)
+        if labels is None:
+            path = self._file(tagger.tag_list, ctx)
+            labels = self._labels[tagger.id] = labels_from_csv(path.read_text(encoding="utf-8"))
+        return labels
+
+    def runs_on_cpu(self, model: Model | Tagger) -> bool:
+        """Whether the model's session, once made, runs on the CPU: no GPU provider, or one that could not start."""
+        return self.session(model).get_providers()[0] == devices.CPU
+
+    def session(self, model: Model | Tagger, ctx=None) -> ort.InferenceSession:
         """The model's inference session, made on first use, once the model's file is there: downloaded if need be,
         with progress and Cancel through the Task's `ctx` (`None` for a caller without a Task), which is also told when
         the session is being made, and where."""
@@ -248,21 +272,32 @@ class Models:
                 if ctx is not None:
                     ctx.progress(0.0, f"Loading the model {model.id} on {devices.name_of(chosen)}")
                 devices.prepare(chosen)
-                session = ort.InferenceSession(
-                    str(path),
-                    devices.session_options(chosen, self.threads),
-                    providers=[name for name, _ in chosen],
-                    provider_options=[options for _, options in chosen],
-                )
+                try:
+                    session = ort.InferenceSession(
+                        str(path),
+                        devices.session_options(chosen, self.threads),
+                        providers=[name for name, _ in chosen],
+                        provider_options=[options for _, options in chosen],
+                    )
+                except Exception as error:
+                    if chosen[0][0] != devices.CPU and devices.out_of_memory(error):
+                        raise OutOfGpuMemory(model) from None
+                    raise
                 self._sessions[model.id] = session
                 _say_where(model, session, chosen, self.device, self.variant)
             return session
 
-    def scores(self, model: Model, batch: np.ndarray, ctx=None) -> np.ndarray:
-        """Each image's label probabilities, `[n, len(labels)]`: the models end in a softmax."""
+    def scores(self, model: Model | Tagger, batch: np.ndarray, ctx=None) -> np.ndarray:
+        """Each image's output, `[n, outputs]`: a classifier's label probabilities (they end in a softmax), a tagger's
+        score per tag."""
         session = self.session(model, ctx)
         with self._run_lock:
-            (output,) = session.run(["output"], {"input": batch})
+            try:
+                (output,) = session.run(["output"], {"input": batch})
+            except Exception as error:
+                if session.get_providers()[0] != devices.CPU and devices.out_of_memory(error):
+                    raise OutOfGpuMemory(model) from None
+                raise
         return output
 
     def close(self) -> None:
@@ -273,7 +308,7 @@ class Models:
             self._sessions.clear()
         gc.collect()
 
-    def _file(self, model: Model, ctx) -> Path:
+    def _file(self, model: Pinned, ctx) -> Path:
         path = self.path_of(model)
         if self.model_dir is not None:
             if not path.is_file():
@@ -285,10 +320,10 @@ class Models:
         with self._lock:
             if path.is_file():
                 return path
-            fetching = self._downloads.get(model.id)
+            fetching = self._downloads.get(model.local_path)
             if fetching is None or fetching.abandoned:
                 fetching = _Download(model, self.endpoint, path, self._lock, lambda: self._ended(model, fetching))
-                self._downloads[model.id] = fetching
+                self._downloads[model.local_path] = fetching
                 waiter = fetching.join(ctx)
                 fetching.start()
             else:
@@ -296,14 +331,14 @@ class Models:
         fetching.wait(waiter)
         return path
 
-    def _ended(self, model: Model, fetching: _Download) -> None:
+    def _ended(self, model: Pinned, fetching: _Download) -> None:
         # Under the lock. An abandoned download may end after a new one has taken its place.
-        if self._downloads.get(model.id) is fetching:
-            del self._downloads[model.id]
+        if self._downloads.get(model.local_path) is fetching:
+            del self._downloads[model.local_path]
 
 
 def _say_where(
-    model: Model, session: ort.InferenceSession, chosen: devices.Providers, device: int, variant: str | None
+    model: Model | Tagger, session: ort.InferenceSession, chosen: devices.Providers, device: int, variant: str | None
 ) -> None:
     """A line on stderr (the Host's log, and the Plugins page's "Python output") naming the provider the session runs
     on, and saying so when it is not the GPU provider the build offered (one that could not start: onnxruntime falls

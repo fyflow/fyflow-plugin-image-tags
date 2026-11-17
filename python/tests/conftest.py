@@ -1,8 +1,10 @@
 """What the tests share: a stand-in for the Host's Task and context, the context keeping to the Task's Allowed roots,
-and a local Hugging Face serving the pinned models.
+a local Hugging Face serving the pinned models, and a stand-in tagger.
 
-The models are fetched once from huggingface.co at their pinned commits into `python/.cache/` (gitignored, checked
-against the catalogue's sha256), then served from a local HTTP server that the Worker reaches through `HF_ENDPOINT`.
+The classifiers' models are fetched once from huggingface.co at their pinned commits into `python/.cache/` (gitignored,
+checked against the catalogue's sha256), then served from a local HTTP server that the Worker reaches through
+`HF_ENDPOINT`. The taggers are over 1 GB, so they are never fetched by the tests: the tagging tests run a stand-in
+(`stand_in.py`), and the golden tests of a real tagger run only when it is in `python/.cache/models/` already.
 """
 
 import asyncio
@@ -20,11 +22,13 @@ from pathlib import Path
 
 import pytest
 
-from image_tags.catalogue import MODELS
+from image_tags.catalogue import MODELS, TAGGERS
 from image_tags.models import DEFAULT_ENDPOINT, download, sha256_of
 
 PYTHON = Path(__file__).resolve().parent.parent
 CACHE = PYTHON / ".cache" / "hf"
+#: The taggers, laid out as a Profile's `modelDir` holds them, put there by hand (see the README's Development).
+TAGGER_CACHE = PYTHON / ".cache" / "models"
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 IMAGES = FIXTURES / "images"
 #: The reach a Task has unless a test gives it another: the fixtures, and the temporary folders `tmp_path` is in.
@@ -282,3 +286,26 @@ def model_dir(models, tmp_path):
 def config(data_dir):
     """The Worker's config as the Host gives it: start-up fields, and `host.dataDir` since the Plugin asks for one."""
     return {"host": {"dataDir": str(data_dir)}}
+
+
+@pytest.fixture
+def stand_in(tmp_path, monkeypatch):
+    """The stand-in tagger (`stand_in.py`), in the catalogue for the test, its files in `tmp_path / "stand-in"`."""
+    from tests import stand_in as module  # `onnx` builds it: a test dependency only
+
+    tagger = module.make(tmp_path / "stand-in")
+    monkeypatch.setitem(TAGGERS, tagger.id, tagger)
+    return tagger
+
+
+@pytest.fixture
+def tagger_hub(stand_in, tmp_path, monkeypatch):
+    """A local hub serving the stand-in tagger's files (a test may spoil them), reached through `HF_ENDPOINT`."""
+    from tests.stand_in import lay_out
+
+    root = tmp_path / "tagger-hub"
+    lay_out(stand_in, tmp_path / "stand-in", root, remote=True)
+    served = Hub(root)
+    monkeypatch.setenv("HF_ENDPOINT", served.url)
+    yield served
+    served.close()

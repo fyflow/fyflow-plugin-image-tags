@@ -26,6 +26,7 @@
   "scripts": {
     "plugin-folder": "node scripts/plugin-folder.ts",
     "golden": "uv run python/scripts/golden.py",
+    "golden:tags": "uv run python/scripts/golden_tags.py",
     "sheets": "uv run python/scripts/sheets.py",
     "eval": "uv run --project python --extra cpu python python/scripts/eval.py",
     "typecheck": "tsc -b",

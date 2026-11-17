@@ -145,7 +145,7 @@ def test_scores_as_imgutils_does(hub, config, model, image):
 @pytest.mark.parametrize("model", list(MODELS.values()), ids=list(MODELS))
 def test_images_scored_in_one_batch_score_as_they_do_alone(hub, data_dir, model):
     models = Models(str(data_dir))
-    inputs = [to_input(load_image(str(name)), model.size) for name in (ANIME, LIVE_ACTION)]
+    inputs = [to_input(load_image(str(name)), model.preprocessing) for name in (ANIME, LIVE_ACTION)]
 
     together = models.scores(model, np.stack(inputs))
     alone = [models.scores(model, one[np.newaxis])[0] for one in inputs]
@@ -254,7 +254,7 @@ def test_a_forward_pass_runs_on_cpu_units_threads_when_the_host_does_not_say(hub
 
 
 def blocking_threads(worker):
-    return worker._blocking._max_workers
+    return worker._passes.blocking_threads
 
 
 def test_classify_image_makes_room_for_as_many_tasks_at_once_as_its_pool_runs(hub, config):

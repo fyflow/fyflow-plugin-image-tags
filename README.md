@@ -1,7 +1,8 @@
 # fyflow-plugin-image-tags
 
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
-CG or live action, of one image or of a whole video from its frames (see `.scratch/image-tags/spec.md`).
+CG or live action, of one image or of a whole video from its frames; and tags an image with a local tagger:
+characters, general tags and a rating (see `.scratch/image-tags/spec.md`).
 
 Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv); 0.12.0 or later adds the
 [Data](#data) link. Install it from **Browse** on the
@@ -90,6 +91,30 @@ One process per Profile runs two Tasks at once, so one Task's decoding and cutti
 | `renderTimestamps` | `false` | Drawn timestamps sit on the frames the models see (a warning says so). |
 | `skipBlankFrames` | `true` | A black or white frame says nothing. |
 
+### `TagImage`
+
+One image per Task (`path` in its input), through one **tagger** (the `tagger` setting; see [Taggers](#taggers)),
+which scores every tag of its tag list. It hands on `{ path, tagger, tags, rating, warnings? }`:
+
+- `tags`: `[{ name, score, category }]`, each tag whose score is over its category's threshold, the highest first.
+  Names are the tagger's own (`long_hair`, `hatsune_miku`, underscores kept); categories are the tagger's
+  (`general`, `character` for `wd-eva02-large`).
+- `rating`: `{ label, scores }`: every rating's score (`general`, `sensitive`, `questionable`, `explicit`) and the
+  highest as the `label`; `null` for a tagger that rates nothing.
+- `warnings`: says so when the tagger ran on the CPU, where it is many times slower than on a GPU.
+
+Settings, all applied to the tagger's output, so Tasks with different settings still share forward passes:
+
+- **`thresholds`**: an object of category: threshold (0 to 1), **merged over the tagger's defaults**: a category
+  it sets changes only that one, so `{ "character": 0.5 }` keeps `general` at its default. A category the tagger
+  lacks fails the Task, naming the ones it has. Defaults for `wd-eva02-large`: general 0.35, character 0.85 (its
+  authors' Space's).
+- **`maxTags`**: the most tags handed on, the highest first; left empty, every tag over its threshold.
+
+Like `ClassifyImage`, it is made for a Flow's `map`: one process per Profile runs up to 16 Tasks at once, and their
+images go through the tagger in shared batches of up to [`tagBatchSize`](#tagbatchsize) (4 unless the Profile says
+otherwise), a batch waiting at most 20 ms for more. A frame sheet is tagged as one image.
+
 ## Allowed roots
 
 The Plugin reads only the folders a Profile allows it, its Allowed roots: it takes the Host's (`roots: true`), so
@@ -110,14 +135,14 @@ sets it itself.
 
 ## Resources
 
-Both Node Types hold what they use per process, not per Task: while its process lives (and for 5 s after its last
+Every Node Type holds what it uses per process, not per Task: while its process lives (and for 5 s after its last
 Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group (every one, on a machine with fewer than 4
 logical processors), and a Task holds nothing of its own. Tasks waiting on a shared forward pass use no processor, and
 a forward pass runs on as many threads as the `cpu` units held. On the `cpu` build a pool holds the same `cpu` units
-and no `gpu` unit. With one GPU unit, the two Node Types' GPU pools, and each Profile's,
-take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s more).
+and no `gpu` unit. With one GPU unit, the Node Types' GPU pools (`TagImage` has a pool of its own too), and each
+Profile's, take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s more).
 That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks alternating
-between them. A Profile can change the idle time (`idleTimeout`) for either Node Type.
+between them. A Profile can change the idle time (`idleTimeout`) for each Node Type.
 
 A Profile can also change what a pool holds (`residentGroups`, e.g. `{ cpu: 8 }`) and how many Tasks it runs at once
 (`maxConcurrentTasks`). The Worker reads what fyflow booked for its process: a forward pass runs on as many threads
@@ -158,7 +183,7 @@ On `directml`:
   order, not by speed: unit 1 may be an integrated GPU, or the same GPU as unit 0. Keep the `gpu` group at 1 unit
   on a `directml` Host.
 
-With one `gpu` unit, `ClassifyImage` and `ClassifyFrames` take turns on the GPU, as above; on the `cpu` build they
+With one `gpu` unit, `ClassifyImage`, `ClassifyFrames` and `TagImage` take turns on the GPU, as above; on the `cpu` build they
 hold no `gpu` unit, so they run beside each other and beside GPU pools. Set [`batchSize`](#batchsize) for the GPU's
 memory.
 
@@ -169,14 +194,22 @@ forward pass, 16 if left empty. It is for the GPU, where the best size depends o
 `ClassifyImage` helps only if that Profile's `maxConcurrentTasks` for `ClassifyImage` is at least as high, since a
 batch holds one image per Task running.
 
+### `tagBatchSize`
+
+A Profile start-up field, apart from `batchSize`: the most images in one forward pass of a tagger, 4 if left empty.
+A tagger is over 1 GB and each image of a batch needs GPU memory on top of it. A tagger that does not fit in the GPU's
+memory fails the Task with `<tagger> needs more GPU memory than this GPU has:`, then what to do: a smaller tagger,
+a smaller `tagBatchSize`, or the `cpu` build. It never falls back to the CPU by itself.
+
 ## Models
 
 Each model is pinned to a Hugging Face commit and its file's sha256, and downloaded into the Plugin's data
-directory by the first Task that needs it (about 17 MB each); nothing downloads at install, and nothing else ever
-loads. A mirror of Hugging Face can be named with `HF_ENDPOINT` in the Host's environment. The models are not part
+directory by the first Task that needs it (about 17 MB each for the classifiers, over 1 GB for a tagger, whose tag
+list is pinned and downloaded beside it); nothing downloads at install, and nothing else ever loads. A mirror of Hugging Face can be named with `HF_ENDPOINT` in the Host's environment. The models are not part
 of this repository and keep their own licences: see [Licence and credits](#licence-and-credits).
 
-A download shows as the Task's progress ("Downloading the model anime_real"). Tasks of one Node Type and Profile that
+A download shows as the Task's progress ("Downloading the model anime_real"; a tagger's tag list first, "Downloading
+the tag list of wd-eva02-large"). Tasks of one Node Type and Profile that
 need a model at once share one download; a cancelled Task stops waiting at once, and the download itself stops when
 every Task waiting on it is cancelled. A failed download, or a file that is not the pinned one, fails the Tasks that
 waited on it with `Could not get the model <id>:` and leaves nothing behind; the next Task tries again.
@@ -204,22 +237,43 @@ expected. Each file is checked against its pinned sha256 before it loads.
 
 The folder has the layout of the data directory's `models` folder:
 `<repo>/<commit, first 12 characters>/<name>/model.onnx`, each file downloaded on another machine from
-`https://huggingface.co/<repo>/resolve/<commit>/<name>/model.onnx`:
+`https://huggingface.co/<repo>/resolve/<commit>/<name>/model.onnx` (a tagger's files are at the top of its repo, with
+no `<name>`):
 
 | Model | Put at (below `modelDir`) | Download from |
 | --- | --- | --- |
 | `anime_real` | `deepghs/anime_real_cls/097a6c1e9e62/mobilenetv3_v1.4_dist/model.onnx` | https://huggingface.co/deepghs/anime_real_cls/resolve/097a6c1e9e62866a435810c883a45a7cb2c7077d/mobilenetv3_v1.4_dist/model.onnx |
 | `anime_classification` | `deepghs/anime_classification/5ee62e06f5f4/mobilenetv3_v1.5_dist/model.onnx` | https://huggingface.co/deepghs/anime_classification/resolve/5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df/mobilenetv3_v1.5_dist/model.onnx |
+| `wd-eva02-large` | `SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394/model.onnx` | https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/resolve/c5303bb7139430db980e4c680a778fe79d72b541/model.onnx |
+| `wd-eva02-large`'s tag list | `SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394/selected_tags.csv` | https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/resolve/c5303bb7139430db980e4c680a778fe79d72b541/selected_tags.csv |
 
 A machine that has run the Plugin online already holds this folder: its data directory's `models` folder can be
 copied whole.
+
+## Taggers
+
+| Tagger | Model | Size | Categories (default thresholds) | Rating |
+| --- | --- | --- | --- | --- |
+| `wd-eva02-large` (default) | [`SmilingWolf/wd-eva02-large-tagger-v3`](https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3) at `c5303bb7139430db980e4c680a778fe79d72b541` (tag `v1.0`), its `model.onnx` and `selected_tags.csv` | about 1.26 GB, downloaded on first use | general (0.35), character (0.85): 8,106 general tags, 2,751 characters | general, sensitive, questionable, explicit |
+
+`wd-eva02-large` is by SmilingWolf, under the Apache-2.0 licence, trained on Danbooru's tags. The Plugin prepares an
+image as the authors' [Space](https://huggingface.co/spaces/SmilingWolf/wd-tagger) (`app.py`) does: what is
+see-through made white, padded to a square on white, resized bicubic to 448×448, BGR, 0 to 255; its golden tests hold
+its scores to a copy of those steps (`pnpm golden:tags`).
+
+**Thresholds merge** over the chosen tagger's defaults, category by category: `{ "character": 0.5 }` lowers the
+character threshold and keeps the general one at 0.35. A tag is handed on when its score is over (not at) its
+category's threshold. A category the tagger lacks fails the Task, naming the tagger's categories.
 
 ## Development
 
 Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 
 - `pnpm check`: typecheck, lint, the declarations test (vitest) and the Python tests (pytest, through uv). The first
-  run fetches the pinned models into `python/.cache/`.
+  run fetches the classifiers' pinned models into `python/.cache/`. The taggers are never downloaded by the tests:
+  the tagging tests run a small stand-in tagger, and a tagger's golden tests (marked `slow`) run only when its files
+  are in `python/.cache/models/`, laid out as a [`modelDir`](#without-internet-modeldir) (skipped otherwise; `-m "not
+  slow"` leaves them out).
 - `pnpm plugin-folder [dir]`: the folder to install from the app's Plugins page ("Choose folder…"), by default
   `dist/image-tags/`.
 - `pnpm sheets`: remakes the frame-sheet fixtures (`python/tests/fixtures/sheets/`) with the video-thumbnail Plugin's
@@ -227,6 +281,9 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 - `pnpm golden`: remakes the synthetic test images (the small and see-through ones) and writes imgutils' scores for
   them and the reference frames (`python/tests/fixtures/golden.json`), in an environment of its own; run it by hand
   when a catalogue model changes.
+- `pnpm golden:tags [-- --from python/.cache/models]`: writes each tagger's top tags and ratings for the test images,
+  prepared by its reference pipeline, not the Plugin's code (`python/tests/fixtures/golden-tags.json`); run it by hand
+  when a catalogue tagger changes. Without `--from`, it downloads each tagger at its pinned commit.
 - `pnpm eval`: measures the classifiers on labelled videos and images; run by hand before a release is tagged (see
   [Eval](#eval)).
 
@@ -303,8 +360,10 @@ own licence, which applies to whoever runs them:
 - [`deepghs/anime_real_cls`](https://huggingface.co/deepghs/anime_real_cls): OpenRAIL. Its use restrictions bind
   anyone using the model, through this Plugin too.
 - [`deepghs/anime_classification`](https://huggingface.co/deepghs/anime_classification): MIT.
+- [`SmilingWolf/wd-eva02-large-tagger-v3`](https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3): Apache-2.0,
+  by SmilingWolf. The Plugin prepares images as its authors' Space does (see [Taggers](#taggers)).
 
-Both are by [DeepGHS](https://huggingface.co/deepghs). The Plugin prepares images as their
+The classifiers are by [DeepGHS](https://huggingface.co/deepghs). The Plugin prepares images as their
 [imgutils](https://github.com/deepghs/imgutils) does, and its tests hold its scores to imgutils' (`pnpm golden`).
 
 The test images keep their own licences, listed in `python/tests/fixtures/images/CREDITS.md` (see

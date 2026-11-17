@@ -1,4 +1,5 @@
-// The image-tags Plugin: classifies images with small local ONNX models, in a Python Worker (ADR-0026 in fyflow-app;
+// The image-tags Plugin: classifies images with small local ONNX models, and tags them with larger ones, in Python
+// Workers (ADR-0026 in fyflow-app;
 // fyflow-plugin-sdk 0.11.0, and 0.12.0's `data()` for a Host that asks). What it declares is here; the work is in
 // `python/`, a uv project the Host makes an environment of.
 import { existsSync, readdirSync } from "node:fs";
@@ -47,7 +48,8 @@ export const CLASSIFIERS = {
 /** What a classifier answers when its top score is below its `minConfidence`: a result, never a failure. */
 export const UNCERTAIN = "uncertain";
 
-/** A catalogue model's file on Hugging Face: `<repo>/resolve/<commit>/<name>/<file>`. */
+/** A catalogue model's file on Hugging Face: `<repo>/resolve/<commit>/<name>/<file>`, or `<repo>/resolve/<commit>/<file>`
+ * when its `name` is empty (a file at the top of the repo, as the taggers' are). */
 export interface ModelFile {
   repo: string;
   commit: string;
@@ -74,19 +76,54 @@ export const MODELS: Readonly<Record<string, ModelFile>> = {
   },
 };
 
-/** Where a model's file is kept below the models' folder: its commit cut to 12 characters, as `Model.local_path`. */
-export const localPathOf = ({ repo, commit, name, file }: ModelFile): string =>
-  `${repo}/${commit.slice(0, 12)}/${name}/${file}`;
+/**
+ * What a Node's `tagger` setting may name, as `catalogue.py` has it (`TAGGERS`; a test holds the two together): each
+ * tagger's model file, beside which its tag list is kept; the default threshold of each category of tags it hands on;
+ * and whether it rates an image.
+ */
+export const TAGGERS = {
+  "wd-eva02-large": {
+    title: "WD EVA02-large tagger v3 (SmilingWolf): general tags, characters and a rating",
+    model: {
+      repo: "SmilingWolf/wd-eva02-large-tagger-v3",
+      commit: "c5303bb7139430db980e4c680a778fe79d72b541",
+      name: "",
+      file: "model.onnx",
+    },
+    tagList: "selected_tags.csv",
+    thresholds: { general: 0.35, character: 0.85 },
+    ratings: true,
+  },
+} as const satisfies Record<
+  string,
+  { title: string; model: ModelFile; tagList: string; thresholds: Record<string, number>; ratings: boolean }
+>;
+
+export const DEFAULT_TAGGER = "wd-eva02-large";
+
+/** Every model file the Plugin downloads, by catalogue id: the classifiers' and the taggers'. */
+const MODEL_FILES: Readonly<Record<string, ModelFile>> = {
+  ...MODELS,
+  ...Object.fromEntries(Object.entries(TAGGERS).map(([id, { model }]) => [id, model])),
+};
+
+/** A model version's folder below the models' folder, `<repo>/<commit, 12 characters>`. */
+const versionFolderOf = ({ repo, commit }: ModelFile): string => `${repo}/${commit.slice(0, 12)}`;
+
+/** Where a model's file is kept below the models' folder: its commit cut to 12 characters, as `Pinned.local_path`. */
+export const localPathOf = (model: ModelFile): string =>
+  [versionFolderOf(model), ...(model.name ? [model.name] : []), model.file].join("/");
 
 /**
  * Which models are in the data directory. It sees only the data directory: `status()` is handed no Profile, so a
  * model folder set on a Profile (`modelDir`) is not looked at.
  */
 function modelsStatus(dataDir: string | undefined): PluginStatus {
-  const ids = Object.keys(MODELS);
+  const ids = Object.keys(MODEL_FILES);
   const missing = ids.filter(
     (id) =>
-      dataDir === undefined || !existsSync(join(dataDir, "models", localPathOf(MODELS[id] as ModelFile))),
+      dataDir === undefined ||
+      !existsSync(join(dataDir, "models", localPathOf(MODEL_FILES[id] as ModelFile))),
   );
   if (missing.length === 0) return { level: "ok", summary: `Models downloaded: ${ids.join(", ")}` };
   return {
@@ -98,10 +135,6 @@ function modelsStatus(dataDir: string | undefined): PluginStatus {
     ],
   };
 }
-
-/** A model version's folder below the models' folder, `<repo>/<commit, 12 characters>`: its file's place, cut short. */
-const versionFolderOf = (model: ModelFile): string =>
-  localPathOf(model).slice(0, -`/${model.name}/${model.file}`.length);
 
 /** The folders directly in `folder`, by name; none when it cannot be read. Links are not followed. */
 function foldersIn(folder: string): string[] {
@@ -123,7 +156,7 @@ function foldersIn(folder: string): string[] {
  * it goes with that version. Only directory listings, and nothing throws: a folder that cannot be read has no items.
  */
 function modelsData(dataDir: string): PluginData {
-  const pinned = new Map(Object.entries(MODELS).map(([id, model]) => [versionFolderOf(model), id]));
+  const pinned = new Map(Object.entries(MODEL_FILES).map(([id, model]) => [versionFolderOf(model), id]));
   const models = join(dataDir, "models");
   const found = foldersIn(models).flatMap((owner) =>
     foldersIn(join(models, owner)).flatMap((repo) =>
@@ -184,6 +217,9 @@ const settingsSchema = {
 /** The most frames in one forward pass when a Profile sets no `batchSize` (`DEFAULT_BATCH_SIZE` in `worker.py`). */
 export const DEFAULT_BATCH_SIZE = 16;
 
+/** The most images in a tagger's forward pass when a Profile sets no `tagBatchSize` (`DEFAULT_TAG_BATCH_SIZE`). */
+export const DEFAULT_TAG_BATCH_SIZE = 4;
+
 /** The most `cpu` units a process holds, and so the threads of a forward pass (`CPU_UNITS` in `worker.py`). */
 export const CPU_UNITS = 4;
 
@@ -207,8 +243,8 @@ export const CPU_RESIDENT_GROUPS = { [CPU_GROUP]: RESIDENT_GROUPS[CPU_GROUP] };
 /** Each pool's holds by build: a build's `residentGroups` replaces the base's whole. */
 const POOL_VARIANTS = { cpu: { residentGroups: CPU_RESIDENT_GROUPS } };
 
-// The Profile's fields. `modelDir` and `batchSize` are start-up fields: the Worker reads them once, when its process
-// starts.
+// The Profile's fields. `modelDir`, `batchSize` and `tagBatchSize` are start-up fields: the Worker reads them once,
+// when its process starts.
 const profileSchema = {
   type: "object",
   properties: {
@@ -226,6 +262,14 @@ const profileSchema = {
         `The most frames in one forward pass; left empty, ${DEFAULT_BATCH_SIZE}. For a GPU, where the best size ` +
         "depends on its memory. ClassifyImage batches the images of the Tasks running at once, so a higher size " +
         "only helps with a maxConcurrentTasks at least as high. Takes effect at the next Reload.",
+    },
+    tagBatchSize: {
+      type: "integer",
+      minimum: 1,
+      description:
+        `The most images in one forward pass of a tagger; left empty, ${DEFAULT_TAG_BATCH_SIZE}. A tagger is over ` +
+        "1 GB, and a batch needs GPU memory on top of it: lower it if a Task fails for want of GPU memory. TagImage " +
+        "batches the images of the Tasks running at once. Takes effect at the next Reload.",
     },
   },
   additionalProperties: false,
@@ -391,6 +435,126 @@ const framesOutputSchema = {
   ],
 };
 
+const taggerIds = Object.keys(TAGGERS);
+/** Every category of tags some tagger hands on, each once. */
+const categories = [...new Set(Object.values(TAGGERS).flatMap(({ thresholds }) => Object.keys(thresholds)))];
+const defaultsLine = Object.entries(TAGGERS)
+  .map(
+    ([id, { thresholds }]) =>
+      `${id}: ${Object.entries(thresholds)
+        .map(([category, threshold]) => `${category} ${threshold}`)
+        .join(", ")}`,
+  )
+  .join("; ");
+
+const tagSettingsSchema = {
+  type: "object",
+  properties: {
+    tagger: {
+      enum: taggerIds,
+      description: `The tagger to run; left empty, ${DEFAULT_TAGGER}. ${Object.entries(TAGGERS)
+        .map(([id, { title }]) => `${id}: ${title}`)
+        .join("; ")}`,
+    },
+    // Open, so a key any tagger may name gets through to the Worker, which fails a Task naming one its tagger lacks.
+    // fyflow's subset takes no schema for `additionalProperties`, so each category some tagger has is a property of
+    // its own, a number from 0 to 1; any other key is left to the Worker.
+    thresholds: {
+      type: "object",
+      properties: Object.fromEntries(
+        categories.map((category) => [
+          category,
+          {
+            type: "number",
+            minimum: 0,
+            maximum: 1,
+            description: `The ${category} tags' threshold; left empty, the tagger's default`,
+          },
+        ]),
+      ),
+      additionalProperties: true,
+      description:
+        "By category, the score a tag must be over to be handed on, from 0 to 1, merged over the tagger's defaults: " +
+        'a category set here changes only that one, so { "character": 0.5 } keeps general at its default. A ' +
+        `category the tagger lacks fails the Task. Defaults: ${defaultsLine}`,
+      examples: [{ character: 0.5 }, { general: 0.25, character: 0.9 }],
+    },
+    maxTags: {
+      type: "integer",
+      minimum: 1,
+      description:
+        "The most tags handed on, the highest scores first; left empty, every tag over its threshold",
+    },
+  },
+  additionalProperties: false,
+};
+
+const RATING_EXAMPLE = {
+  label: "general",
+  scores: { general: 0.86, sensitive: 0.12, questionable: 0.01, explicit: 0 },
+};
+
+const tagOutputSchema = {
+  type: "object",
+  required: ["path", "tagger", "tags", "rating"],
+  properties: {
+    path: { type: "string", description: "the image's absolute path" },
+    tagger: { type: "string", description: "the tagger that ran" },
+    tags: {
+      type: "array",
+      description:
+        "the tags whose score is over their category's threshold, the highest first, at most maxTags, named as the " +
+        "tagger names them (underscores kept)",
+      items: {
+        type: "object",
+        required: ["name", "score", "category"],
+        properties: {
+          name: { type: "string", description: "the tag, as the tagger's tag list has it" },
+          score: { type: "number", description: "its score, from 0 to 1" },
+          category: {
+            type: "string",
+            description: `its category, as the tagger names it: ${Object.entries(TAGGERS)
+              .map(([id, { thresholds }]) => `${id}: ${Object.keys(thresholds).join(", ")}`)
+              .join("; ")}`,
+          },
+        },
+      },
+    },
+    // Keyed by the tagger's rating labels, so `scores` can only say "an object".
+    rating: {
+      type: ["object", "null"],
+      required: ["label", "scores"],
+      description: "the tagger's rating of the image, or null for a tagger that rates nothing",
+      properties: {
+        label: { type: "string", description: "the rating with the highest score" },
+        scores: {
+          type: "object",
+          description:
+            "every rating's score, from 0 to 1, by rating (general, sensitive, questionable, explicit)",
+        },
+      },
+    },
+    warnings: {
+      type: "array",
+      items: { type: "string" },
+      description: "what may make the answer less good or slower than it could be (a tagger run on the CPU)",
+    },
+  },
+  examples: [
+    {
+      path: EXAMPLE_IMAGE,
+      tagger: "wd-eva02-large",
+      tags: [
+        { name: "1girl", score: 0.97, category: "general" },
+        { name: "hatsune_miku", score: 0.95, category: "character" },
+        { name: "long_hair", score: 0.88, category: "general" },
+        { name: "twintails", score: 0.81, category: "general" },
+      ],
+      rating: RATING_EXAMPLE,
+    },
+  ],
+};
+
 export default definePlugin({
   id: "fyflow-ext.image-tags",
   version: "0.2.1",
@@ -410,7 +574,7 @@ export default definePlugin({
   // `settings.roots`, and the Workers refuse every path outside them before reading it. So `settingsSchema` names no
   // `roots`.
   roots: true,
-  profile: { schema: profileSchema, startup: ["modelDir", "batchSize"] },
+  profile: { schema: profileSchema, startup: ["modelDir", "batchSize", "tagBatchSize"] },
   // Asked every few seconds while the Plugins page is open: a check that each model's file exists, nothing slower.
   status: ({ dataDir }) => modelsStatus(dataDir),
   // Asked by a Host of SDK 0.12 or later when someone opens the Plugin's Data link (a Host before never asks): what the
@@ -429,6 +593,12 @@ export default definePlugin({
       settingsSchema,
       inputSchema: framesInputSchema,
       outputSchema: framesOutputSchema,
+    },
+    tagImage: {
+      python: "image_tags.worker:TagImage",
+      settingsSchema: tagSettingsSchema,
+      inputSchema,
+      outputSchema: tagOutputSchema,
     },
   },
   nodeTypes: {
@@ -465,6 +635,23 @@ export default definePlugin({
       icon: "image",
       description:
         "Tells what a whole video is (anime, CG or live action, …) from its VideoThumbnail frame sheet, or a folder of frames.",
+    },
+    TagImage: {
+      worker: "tagImage",
+      profile: ["modelDir", "tagBatchSize"],
+      // A Worker and pool of its own, holding the tagger's session once (over 1 GB of GPU memory) and the same
+      // resident units as the classifiers' pools, so it takes turns with them on the `gpu` unit. Up to 16 Tasks at
+      // once (`TAG_TASKS_AT_ONCE` in `worker.py`), whose images go through the tagger together, up to `tagBatchSize`
+      // to a forward pass, a batch waiting at most 20 ms for more. Stopped after 5 s with no Task, as the others.
+      pool: {
+        maxThreads: 1,
+        maxConcurrentTasks: 16,
+        idleTimeout: 5_000,
+        residentGroups: RESIDENT_GROUPS,
+        variants: POOL_VARIANTS,
+      },
+      icon: "tag",
+      description: "Tags one image (characters, general tags and a rating) with a local tagger.",
     },
   },
 });

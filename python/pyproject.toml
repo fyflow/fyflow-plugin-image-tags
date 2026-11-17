@@ -22,7 +22,8 @@ directml = ["onnxruntime-directml>=1.21"]
 
 [dependency-groups]
 # Not `dev`, which `uv sync` installs by default: the Host's environment gets none of it.
-test = ["pytest>=8"]
+# `onnx` builds the small stand-in tagger the tagging tests run, so they need no 1.26 GB download.
+test = ["onnx>=1.17", "pytest>=8"]
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, { extra = "directml" }]]
@@ -31,3 +32,4 @@ conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, { extra = "directml" }]]
 testpaths = ["tests"]
 # As the Host runs it: the project folder on the path, never installed.
 pythonpath = ["."]
+markers = ["slow: runs a model over 1 GB, only when it is on disk already (skipped otherwise)"]

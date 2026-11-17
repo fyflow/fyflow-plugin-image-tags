@@ -23,10 +23,13 @@ import plugin, {
   cpuUnits,
   DEFAULT_BATCH_SIZE,
   DEFAULT_CLASSIFIER,
+  DEFAULT_TAG_BATCH_SIZE,
+  DEFAULT_TAGGER,
   localPathOf,
   MODELS,
   type ModelFile,
   RESIDENT_GROUPS,
+  TAGGERS,
 } from "../plugin.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
@@ -65,8 +68,16 @@ const registry = (): RegistryDocument => ({
   },
 });
 
-/** The Plugin's Node Types: one image per Task, and a sheet or folder of frames per Task. */
+/** The Plugin's classifying Node Types: one image per Task, and a sheet or folder of frames per Task. */
 const NODE_TYPES = ["ClassifyImage", "ClassifyFrames"] as const;
+/** Every Node Type: the classifying ones, and tagging one image per Task. */
+const ALL_NODE_TYPES = [...NODE_TYPES, "TagImage"] as const;
+
+/** Every model file the Plugin downloads, as `status()` and `data()` see them: the classifiers' and the taggers'. */
+const MODEL_FILES: Record<string, ModelFile> = {
+  ...MODELS,
+  ...Object.fromEntries(Object.entries(TAGGERS).map(([id, { model }]) => [id, model])),
+};
 
 const flowOf = (settings: Record<string, unknown>, type: string = "ClassifyImage"): FlowDefinition => ({
   flowId: "classify",
@@ -79,7 +90,9 @@ const flowOf = (settings: Record<string, unknown>, type: string = "ClassifyImage
 });
 
 /** The Python catalogue's classifiers and model files, as the TypeScript mirrors spell them (asked once). */
-let catalogue: { default: string; classifiers: unknown; models: unknown } | undefined;
+let catalogue:
+  | { default: string; classifiers: unknown; models: unknown; defaultTagger: string; taggers: unknown }
+  | undefined;
 const pythonCatalogue = () => {
   catalogue ??= JSON.parse(
     execFileSync(
@@ -91,20 +104,33 @@ const pythonCatalogue = () => {
         "cpu",
         "python",
         "-c",
-        "import json; from image_tags.catalogue import CLASSIFIERS, MODELS, DEFAULT_CLASSIFIER as d; " +
+        "import json; from image_tags.catalogue import CLASSIFIERS, MODELS, TAGGERS, DEFAULT_TAGGER, " +
+          "DEFAULT_CLASSIFIER as d; " +
           "print(json.dumps({'default': d, 'classifiers': {k: {'kind': c.kind, 'title': c.title, " +
           "'labels': list(c.labels), 'models': [m.id for m in c.models], 'minConfidence': c.min_confidence} " +
           "for k, c in CLASSIFIERS.items()}, 'models': {k: {'repo': m.repo, 'commit': m.commit, 'name': m.name, " +
-          "'file': m.file, 'localPath': m.local_path} for k, m in MODELS.items()}}))",
+          "'file': m.file, 'localPath': m.local_path} for k, m in MODELS.items()}, " +
+          "'defaultTagger': DEFAULT_TAGGER, 'taggers': {k: {'title': t.title, 'model': {'repo': t.repo, " +
+          "'commit': t.commit, 'name': t.name, 'file': t.file}, 'localPath': t.local_path, " +
+          "'tagList': t.tag_list.file, 'thresholds': {c.name: c.threshold for c in t.categories}, " +
+          "'ratings': t.rating_code is not None} for k, t in TAGGERS.items()}}))",
       ],
       { cwd: project, encoding: "utf8" },
     ),
   );
-  return catalogue as { default: string; classifiers: unknown; models: unknown };
+  return catalogue as NonNullable<typeof catalogue>;
 };
 
 /** The Python Worker's constants that the declarations repeat (asked once). */
-let workerConstants: { tasksAtOnce: number; cpuUnits: number; defaultBatchSize: number } | undefined;
+let workerConstants:
+  | {
+      tasksAtOnce: number;
+      tagTasksAtOnce: number;
+      cpuUnits: number;
+      defaultBatchSize: number;
+      defaultTagBatchSize: number;
+    }
+  | undefined;
 const pythonWorker = () => {
   workerConstants ??= JSON.parse(
     execFileSync(
@@ -117,12 +143,13 @@ const pythonWorker = () => {
         "python",
         "-c",
         "import json; from image_tags import worker as w; print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
-          "'cpuUnits': w.CPU_UNITS, 'defaultBatchSize': w.DEFAULT_BATCH_SIZE}))",
+          "'tagTasksAtOnce': w.TAG_TASKS_AT_ONCE, 'cpuUnits': w.CPU_UNITS, " +
+          "'defaultBatchSize': w.DEFAULT_BATCH_SIZE, 'defaultTagBatchSize': w.DEFAULT_TAG_BATCH_SIZE}))",
       ],
       { cwd: project, encoding: "utf8" },
     ),
   );
-  return workerConstants as { tasksAtOnce: number; cpuUnits: number; defaultBatchSize: number };
+  return workerConstants as NonNullable<typeof workerConstants>;
 };
 
 const findingsOf = (flow: FlowDefinition) => {
@@ -246,7 +273,7 @@ describe("the Plugin's declarations", () => {
     expect(plugin.python?.pickVariant).toBeTypeOf("function");
   });
 
-  it.each(NODE_TYPES)(
+  it.each(ALL_NODE_TYPES)(
     "holds a GPU and up to 4 processors per %s process, while it lives, and nothing per Task",
     (type) => {
       const nodeType = plugin.nodeTypes?.[type];
@@ -267,7 +294,7 @@ describe("the Plugin's declarations", () => {
     expect(RESIDENT_GROUPS[CPU_GROUP]).toBe(cpuUnits(availableParallelism()));
   });
 
-  it.each(NODE_TYPES)("holds no GPU per %s process on the cpu build, only its processors", (type) => {
+  it.each(ALL_NODE_TYPES)("holds no GPU per %s process on the cpu build, only its processors", (type) => {
     const pool = plugin.nodeTypes?.[type]?.pool;
     expect(pool?.variants).toEqual({ cpu: { residentGroups: { [CPU_GROUP]: RESIDENT_GROUPS[CPU_GROUP] } } });
     for (const build of Object.keys(pool?.variants ?? {}))
@@ -362,10 +389,124 @@ describe("the Plugin's declarations", () => {
   it("takes a model folder on a Profile, as a start-up field both Node Types read", () => {
     const schema = plugin.profile?.schema as JsonSchema;
     expect(plugin.profile?.startup).toContain("modelDir");
-    for (const type of NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).toContain("modelDir");
+    for (const type of ALL_NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).toContain("modelDir");
     expect(findings(schema, { modelDir: "D:/models" })).toEqual([]);
     expect(findings(schema, {})).toEqual([]);
     expect(findings(schema, { modelDir: 3 })).not.toEqual([]);
+  });
+});
+
+describe("TagImage", () => {
+  const tagFlowOf = (settings: Record<string, unknown>) => flowOf(settings, "TagImage");
+  const settingsSchema = plugin.workers?.tagImage?.settingsSchema as JsonSchema & {
+    properties: Record<string, JsonSchema & { description?: string }>;
+  };
+  const outputSchema = plugin.workers?.tagImage?.outputSchema as JsonSchema & {
+    required: string[];
+    examples: unknown[];
+  };
+
+  it("offers the taggers the Python catalogue has: their files, categories, defaults and ratings", () => {
+    expect(pythonCatalogue().taggers).toEqual(
+      Object.fromEntries(
+        Object.entries(TAGGERS).map(([id, tagger]) => [
+          id,
+          { ...tagger, localPath: localPathOf(tagger.model) },
+        ]),
+      ),
+    );
+    expect(pythonCatalogue().defaultTagger).toBe(DEFAULT_TAGGER);
+    expect(DEFAULT_TAGGER).toBe("wd-eva02-large");
+  });
+
+  it("keeps a tagger at the top of its repo's commit, with no subfolder", () => {
+    expect(localPathOf(TAGGERS["wd-eva02-large"].model)).toBe(
+      "SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394/model.onnx",
+    );
+  });
+
+  it("runs on the tagImage Worker, a class of the Python project", () => {
+    expect(plugin.nodeTypes?.TagImage?.worker).toBe("tagImage");
+    expect((plugin.workers?.tagImage as { python?: string } | undefined)?.python).toBe(
+      "image_tags.worker:TagImage",
+    );
+  });
+
+  it("takes a tagger the catalogue has, and refuses one it lacks", () => {
+    for (const tagger of Object.keys(TAGGERS)) expect(findingsOf(tagFlowOf({ tagger }))).toEqual([]);
+    expect(findingsOf(tagFlowOf({}))).toEqual([]);
+    expect(findingsOf(tagFlowOf({ tagger: "nope" })).map((f) => f.rule)).toContain("FD-V33");
+    expect(findingsOf(tagFlowOf({ tagger: "style" })).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("takes thresholds as an open object, each category a tagger has a number from 0 to 1", () => {
+    // A key no tagger has gets through to the Worker, which fails the Task naming the tagger's categories.
+    for (const thresholds of [{}, { character: 0.5 }, { general: 0, character: 1 }, { copyright: 0.2 }])
+      expect(findingsOf(tagFlowOf({ thresholds }))).toEqual([]);
+    for (const thresholds of [{ general: 1.5 }, { general: -0.1 }, { character: "0.3" }, 0.35, [0.35]])
+      expect(findingsOf(tagFlowOf({ thresholds })).map((f) => f.rule)).toContain("FD-V33");
+    const properties = (settingsSchema.properties.thresholds?.properties ?? {}) as Record<string, JsonSchema>;
+    for (const { thresholds } of Object.values(TAGGERS))
+      for (const category of Object.keys(thresholds))
+        expect(properties[category]).toMatchObject({ type: "number", minimum: 0, maximum: 1 });
+  });
+
+  it("says, in the thresholds' description, how they merge and each tagger's defaults", () => {
+    const description = settingsSchema.properties.thresholds?.description ?? "";
+    for (const [id, { thresholds }] of Object.entries(TAGGERS)) {
+      expect(description).toContain(id);
+      for (const [category, threshold] of Object.entries(thresholds))
+        expect(description).toContain(`${category} ${threshold}`);
+    }
+    expect(description).toContain("only");
+  });
+
+  it("takes maxTags as an integer of at least 1, or none", () => {
+    for (const maxTags of [1, 30]) expect(findingsOf(tagFlowOf({ maxTags }))).toEqual([]);
+    for (const maxTags of [0, 1.5, "10"])
+      expect(findingsOf(tagFlowOf({ maxTags })).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("hands on the tags over their thresholds and the rating, its examples among what it hands on", () => {
+    expect(outputSchema.required).toEqual(expect.arrayContaining(["path", "tagger", "tags", "rating"]));
+    expect(outputSchema.examples.length).toBeGreaterThan(0);
+    for (const example of outputSchema.examples) expect(findings(outputSchema, example)).toEqual([]);
+    const result = {
+      path: "D:/Pictures/a.png",
+      tagger: "wd-eva02-large",
+      tags: [
+        { name: "1girl", score: 0.98, category: "general" },
+        { name: "hatsune_miku", score: 0.91, category: "character" },
+      ],
+      rating: {
+        label: "general",
+        scores: { general: 0.8, sensitive: 0.15, questionable: 0.03, explicit: 0.01 },
+      },
+      warnings: ["wd-eva02-large ran on the CPU"],
+    };
+    expect(findings(outputSchema, result)).toEqual([]);
+    expect(findings(outputSchema, { ...result, rating: null })).toEqual([]);
+    expect(findings(outputSchema, { ...result, tags: [{ name: "1girl", score: 0.98 }] })).not.toEqual([]);
+    expect(findings(outputSchema, { ...result, rating: { label: "general" } })).not.toEqual([]);
+  });
+
+  it("runs 16 Tasks at a time in one process, as many as its Worker makes room for", () => {
+    const pool = plugin.nodeTypes?.TagImage?.pool;
+    expect(pool).toMatchObject({ maxThreads: 1, maxConcurrentTasks: 16 });
+    expect(pythonWorker().tagTasksAtOnce).toBe(pool?.maxConcurrentTasks);
+  });
+
+  it("lets a Profile set the most images in a tagger's forward pass, apart from batchSize, 4 by default", () => {
+    const schema = plugin.profile?.schema as {
+      properties: Record<string, JsonSchema & { description?: string }>;
+    };
+    expect(schema.properties.tagBatchSize).toMatchObject({ type: "integer", minimum: 1 });
+    expect(schema.properties.tagBatchSize?.description).toContain(`left empty, ${DEFAULT_TAG_BATCH_SIZE}`);
+    expect(DEFAULT_TAG_BATCH_SIZE).toBe(4);
+    expect(plugin.profile?.startup).toContain("tagBatchSize");
+    expect(plugin.nodeTypes?.TagImage?.profile).toEqual(["modelDir", "tagBatchSize"]);
+    for (const type of NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).not.toContain("tagBatchSize");
+    expect(pythonWorker().defaultTagBatchSize).toBe(DEFAULT_TAG_BATCH_SIZE);
   });
 });
 
@@ -385,12 +526,12 @@ describe("the Plugin's status", () => {
 
     expect(status.level).toBe("info");
     expect(status.summary).toBe("Models download on first use");
-    for (const id of Object.keys(MODELS)) expect(JSON.stringify(status.details)).toContain(id);
+    for (const id of Object.keys(MODEL_FILES)) expect(JSON.stringify(status.details)).toContain(id);
   });
 
   it("is ok once every model is in the data directory", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
-    for (const model of Object.values(MODELS)) {
+    for (const model of Object.values(MODEL_FILES)) {
       const file = join(dataDir, "models", localPathOf(model));
       mkdirSync(join(file, ".."), { recursive: true });
       writeFileSync(file, "a model");
@@ -399,7 +540,7 @@ describe("the Plugin's status", () => {
     const status = await statusOf();
 
     expect(status.level).toBe("ok");
-    for (const id of Object.keys(MODELS)) expect(status.summary).toContain(id);
+    for (const id of Object.keys(MODEL_FILES)) expect(status.summary).toContain(id);
   });
 });
 
@@ -433,18 +574,23 @@ describe("the Plugin's data", () => {
 
   it("has an item per downloaded catalogue model, by its id and source, which downloads again", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
-    for (const model of Object.values(MODELS)) downloaded(model);
+    for (const model of Object.values(MODEL_FILES)) downloaded(model);
 
     const { items } = await dataOf();
 
     expect(items).toEqual(
-      Object.entries(MODELS).map(([id, { repo, commit }]) => ({
+      Object.entries(MODEL_FILES).map(([id, { repo, commit }]) => ({
         path: `models/${repo}/${commit.slice(0, 12)}`,
         label: `${id}: ${repo} at ${commit.slice(0, 12)}`,
         lost: "Downloads again when next used",
       })),
     );
     expect(items[0]?.label).toBe("anime_real: deepghs/anime_real_cls at 097a6c1e9e62");
+    expect(items.at(-1)).toEqual({
+      path: "models/SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394",
+      label: "wd-eva02-large: SmilingWolf/wd-eva02-large-tagger-v3 at c5303bb71394",
+      lost: "Downloads again when next used",
+    });
   });
 
   it("lists only the models on disk", async () => {
@@ -485,14 +631,14 @@ describe("the Plugin's data", () => {
 
   it("gives every item a relative, /-separated path inside the data directory", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
-    for (const model of [...Object.values(MODELS), OLD]) downloaded(model);
+    for (const model of [...Object.values(MODEL_FILES), OLD]) downloaded(model);
     // Files where folders are expected are no model's.
     writeFileSync(join(dataDir, "models", "stray.txt"), "");
     writeFileSync(join(dataDir, "models", "deepghs", "stray.txt"), "");
 
     const { items } = await dataOf();
 
-    expect(items).toHaveLength(3);
+    expect(items).toHaveLength(Object.keys(MODEL_FILES).length + 1);
     for (const { path } of items) {
       expect(path).toMatch(/^models\/[^/\\]+\/[^/\\]+\/[^/\\]+$/);
       expect(path.split("/")).not.toContain("..");

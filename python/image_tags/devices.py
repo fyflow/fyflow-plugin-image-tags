@@ -11,6 +11,7 @@ is DirectML's adapter of that number. The CPU stays in the list, for what a GPU 
 provider that cannot start (onnxruntime then falls back to the CPU, which the session's load line on stderr shows).
 """
 
+import re
 import threading
 from collections.abc import Iterable
 
@@ -26,6 +27,13 @@ Providers = list[tuple[str, dict]]
 
 #: What a Task's progress calls each provider.
 _NAMES = {CUDA: "CUDA", DIRECTML: "DirectML", CPU: "the CPU"}
+
+#: What ONNX Runtime's errors say when a provider could not allocate memory: its arena (`BFCArena`), CUDA, cuDNN or
+#: cuBLAS, or DirectML (`E_OUTOFMEMORY`, `0x8007000E`).
+_OUT_OF_MEMORY = re.compile(
+    r"Failed to allocate memory|out of memory|_ALLOC_FAILED|Available memory of \d+ is smaller|E_OUTOFMEMORY|8007000E",
+    re.IGNORECASE,
+)
 
 _preloaded = threading.Lock()
 _preload_done = False
@@ -55,6 +63,11 @@ def name_of(chosen: Providers) -> str:
     """The provider a session is made for (the first chosen), as a person reads it: "CUDA", "DirectML", "the CPU"."""
     provider = chosen[0][0]
     return _NAMES.get(provider, provider)
+
+
+def out_of_memory(error: BaseException) -> bool:
+    """Whether an error of ONNX Runtime's says a provider ran out of memory."""
+    return bool(_OUT_OF_MEMORY.search(str(error)))
 
 
 def session_options(chosen: Providers, threads: int) -> ort.SessionOptions:
