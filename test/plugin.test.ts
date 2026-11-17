@@ -425,6 +425,25 @@ describe("TagImage", () => {
     expect(localPathOf(TAGGERS["wd-eva02-large"].model)).toBe(
       "SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394/model.onnx",
     );
+    expect(localPathOf(TAGGERS.pixai.model)).toBe(
+      "Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/080077856314/model.onnx",
+    );
+    expect(localPathOf(TAGGERS["pixai-fp16"].model)).toBe(
+      "Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/080077856314/model_fp16.onnx",
+    );
+  });
+
+  it("offers PixAI in fp32 and fp16, with its authors' thresholds and five categories", () => {
+    for (const id of ["pixai", "pixai-fp16"] as const)
+      expect(TAGGERS[id].thresholds).toEqual({
+        general: 0.17,
+        character: 0.27,
+        copyright: 0.24,
+        style: 0.15,
+        meta: 0.17,
+      });
+    const properties = settingsSchema.properties.thresholds?.properties ?? {};
+    expect(Object.keys(properties)).toEqual(["general", "character", "copyright", "style", "meta"]);
   });
 
   it("runs on the tagImage Worker, a class of the Python project", () => {
@@ -627,25 +646,53 @@ describe("the Plugin's data", () => {
     expect(data.summary).toBe("Downloaded models");
   });
 
-  it("has an item per downloaded catalogue model, by its id and source, which downloads again", async () => {
+  /** The catalogue's version folders, in its order, each with the ids of the models kept in it. */
+  const versionFolders = () => {
+    const folders = new Map<string, string[]>();
+    for (const [id, { repo, commit }] of Object.entries(MODEL_FILES)) {
+      const folder = `${repo}/${commit.slice(0, 12)}`;
+      folders.set(folder, [...(folders.get(folder) ?? []), id]);
+    }
+    return folders;
+  };
+
+  it("has an item per downloaded catalogue model version, by its ids and source, which downloads again", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
     for (const model of Object.values(MODEL_FILES)) downloaded(model);
 
     const { items } = await dataOf();
 
     expect(items).toEqual(
-      Object.entries(MODEL_FILES).map(([id, { repo, commit }]) => ({
-        path: `models/${repo}/${commit.slice(0, 12)}`,
-        label: `${id}: ${repo} at ${commit.slice(0, 12)}`,
-        lost: "Downloads again when next used",
-      })),
+      [...versionFolders()].map(([folder, ids]) => {
+        const at = folder.lastIndexOf("/");
+        return {
+          path: `models/${folder}`,
+          label: `${ids.join(", ")}: ${folder.slice(0, at)} at ${folder.slice(at + 1)}`,
+          lost: "Downloads again when next used",
+        };
+      }),
     );
     expect(items[0]?.label).toBe("anime_real: deepghs/anime_real_cls at 097a6c1e9e62");
-    expect(items.at(-1)).toEqual({
+    expect(items).toContainEqual({
       path: "models/SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394",
       label: "wd-eva02-large: SmilingWolf/wd-eva02-large-tagger-v3 at c5303bb71394",
       lost: "Downloads again when next used",
     });
+  });
+
+  it("names both PixAI precisions on the one item of the commit they share", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    downloaded(TAGGERS["pixai-fp16"].model);
+
+    const { items } = await dataOf();
+
+    expect(items).toEqual([
+      {
+        path: "models/Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/080077856314",
+        label: "pixai, pixai-fp16: Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8 at 080077856314",
+        lost: "Downloads again when next used",
+      },
+    ]);
   });
 
   it("lists only the models on disk", async () => {
@@ -693,7 +740,7 @@ describe("the Plugin's data", () => {
 
     const { items } = await dataOf();
 
-    expect(items).toHaveLength(Object.keys(MODEL_FILES).length + 1);
+    expect(items).toHaveLength(versionFolders().size + 1);
     for (const { path } of items) {
       expect(path).toMatch(/^models\/[^/\\]+\/[^/\\]+\/[^/\\]+$/);
       expect(path.split("/")).not.toContain("..");

@@ -94,6 +94,31 @@ export const TAGGERS = {
     thresholds: { general: 0.35, character: 0.85 },
     ratings: true,
   },
+  pixai: {
+    title:
+      "PixAI tagger v1.0 (PixAI; ONNX by Mexes): general tags, characters, copyrights, styles, meta and a rating",
+    model: {
+      repo: "Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8",
+      commit: "0800778563144a0e6fdf41ddadd84aae3cb0dbcf",
+      name: "",
+      file: "model.onnx",
+    },
+    tagList: "selected_tags.csv",
+    thresholds: { general: 0.17, character: 0.27, copyright: 0.24, style: 0.15, meta: 0.17 },
+    ratings: true,
+  },
+  "pixai-fp16": {
+    title: "PixAI tagger v1.0 in fp16 (PixAI; ONNX by Mexes): half the size, for a GPU",
+    model: {
+      repo: "Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8",
+      commit: "0800778563144a0e6fdf41ddadd84aae3cb0dbcf",
+      name: "",
+      file: "model_fp16.onnx",
+    },
+    tagList: "selected_tags.csv",
+    thresholds: { general: 0.17, character: 0.27, copyright: 0.24, style: 0.15, meta: 0.17 },
+    ratings: true,
+  },
 } as const satisfies Record<
   string,
   { title: string; model: ModelFile; tagList: string; thresholds: Record<string, number>; ratings: boolean }
@@ -156,7 +181,10 @@ function foldersIn(folder: string): string[] {
  * it goes with that version. Only directory listings, and nothing throws: a folder that cannot be read has no items.
  */
 function modelsData(dataDir: string): PluginData {
-  const pinned = new Map(Object.entries(MODEL_FILES).map(([id, model]) => [versionFolderOf(model), id]));
+  // By version folder, the ids of the catalogue models kept in it: two precisions of one tagger share their commit's.
+  const pinned = new Map<string, string[]>();
+  for (const [id, model] of Object.entries(MODEL_FILES))
+    pinned.set(versionFolderOf(model), [...(pinned.get(versionFolderOf(model)) ?? []), id]);
   const models = join(dataDir, "models");
   const found = foldersIn(models).flatMap((owner) =>
     foldersIn(join(models, owner)).flatMap((repo) =>
@@ -166,14 +194,18 @@ function modelsData(dataDir: string): PluginData {
   const itemOf = (folder: string): PluginDataItem => {
     const at = folder.lastIndexOf("/");
     const source = `${folder.slice(0, at)} at ${folder.slice(at + 1)}`;
-    const id = pinned.get(folder);
-    return id === undefined
+    const ids = pinned.get(folder);
+    return ids === undefined
       ? {
           path: `models/${folder}`,
           label: `${source}: not used by this version`,
           lost: "Nothing this version needs",
         }
-      : { path: `models/${folder}`, label: `${id}: ${source}`, lost: "Downloads again when next used" };
+      : {
+          path: `models/${folder}`,
+          label: `${ids.join(", ")}: ${source}`,
+          lost: "Downloads again when next used",
+        };
   };
   // The catalogue's models first, in its order, then what earlier versions left.
   const order = [...pinned.keys()];

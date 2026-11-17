@@ -30,8 +30,9 @@ TAG_LIST = """tag_id,name,category,count
 TAGS = 10
 
 
-def model_bytes(seed: int = 0) -> bytes:
-    """The graph: each image's mean colour (BGR, scaled to [0, 1]) times fixed weights, plus a bias, sigmoided."""
+def model_bytes(seed: int = 0, output: str = "output") -> bytes:
+    """The graph: each image's mean colour (BGR, scaled to [0, 1]) times fixed weights, plus a bias, sigmoided, as
+    `output`."""
     rng = np.random.default_rng(seed)
     weights = rng.normal(0, 4, (3, TAGS)).astype(np.float32)
     bias = rng.normal(0, 1, TAGS).astype(np.float32)
@@ -40,13 +41,13 @@ def model_bytes(seed: int = 0) -> bytes:
         helper.make_node("Div", ["means", "scale"], ["scaled"]),
         helper.make_node("MatMul", ["scaled", "weights"], ["product"]),
         helper.make_node("Add", ["product", "bias"], ["logits"]),
-        helper.make_node("Sigmoid", ["logits"], ["output"]),
+        helper.make_node("Sigmoid", ["logits"], [output]),
     ]
     graph = helper.make_graph(
         nodes,
         "stand-in tagger",
         [helper.make_tensor_value_info("input", TensorProto.FLOAT, ["batch", 448, 448, 3])],
-        [helper.make_tensor_value_info("output", TensorProto.FLOAT, ["batch", TAGS])],
+        [helper.make_tensor_value_info(output, TensorProto.FLOAT, ["batch", TAGS])],
         initializer=[
             numpy_helper.from_array(np.array(255, dtype=np.float32), "scale"),
             numpy_helper.from_array(weights, "weights"),
@@ -60,9 +61,9 @@ def model_bytes(seed: int = 0) -> bytes:
 
 def make(folder: Path, **entry) -> Tagger:
     """Writes the stand-in's files into `folder` (`model.onnx`, `selected_tags.csv`) and gives its catalogue entry,
-    with what `entry` changes of it."""
+    with what `entry` changes of it (its graph's output named as `entry`'s `output`, when it gives one)."""
     folder.mkdir(parents=True, exist_ok=True)
-    model, tags = model_bytes(), TAG_LIST.encode()
+    model, tags = model_bytes(output=entry.get("output", "output")), TAG_LIST.encode()
     (folder / "model.onnx").write_bytes(model)
     (folder / "selected_tags.csv").write_bytes(tags)
     return replace(

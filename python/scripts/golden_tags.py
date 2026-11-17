@@ -9,6 +9,8 @@ Plugin's code: `python/tests/fixtures/golden-tags.json`, which the taggers' gold
   RGBA (Gradio's `image_mode="RGBA"`), on a white canvas, padded to a square on white, resized bicubic to the model's
   input, RGB to BGR, float32 from 0 to 255.
 
+PixAI's reference needs its authors' PyTorch code: `scripts/golden_pixai.py` writes it, to `golden-pixai.json`.
+
 Run by hand (`pnpm golden:tags`) when a tagger of the catalogue changes; never by `pnpm check`. It runs in an
 environment of its own (the inline metadata above). Each tagger's files are downloaded at its pinned commit, or taken
 from `--from <folder>` (a Profile's `modelDir` layout, e.g. `python/.cache/models/`), and checked against the
@@ -36,6 +38,8 @@ FIXTURES = PYTHON / "tests" / "fixtures"
 IMAGES = FIXTURES / "images"
 #: The most tags kept per image, general and character together, highest first.
 TOP = 20
+#: The taggers whose reference is the Space's `app.py`.
+WD_TAGGERS = ("wd-eva02-large",)
 
 
 def prepare_image(image: Image.Image, target_size: int) -> np.ndarray:
@@ -131,7 +135,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--from", dest="source", type=Path, help="a folder holding the taggers as a modelDir does")
     args = parser.parse_args()
-    golden = {tagger.id: golden_of(tagger, args.source) for tagger in TAGGERS.values()}
+    golden = {tagger_id: golden_of(TAGGERS[tagger_id], args.source) for tagger_id in WD_TAGGERS}
     out = FIXTURES / "golden-tags.json"
     out.write_text(json.dumps(golden, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"Wrote {out}")

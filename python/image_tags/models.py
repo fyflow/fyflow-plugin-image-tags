@@ -293,7 +293,7 @@ class Models:
         session = self.session(model, ctx)
         with self._run_lock:
             try:
-                (output,) = session.run(["output"], {"input": batch})
+                (output,) = session.run([model.output], {"input": batch})
             except Exception as error:
                 if session.get_providers()[0] != devices.CPU and devices.out_of_memory(error):
                     raise OutOfGpuMemory(model) from None

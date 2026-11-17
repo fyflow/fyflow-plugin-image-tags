@@ -160,7 +160,7 @@ def test_a_threshold_for_a_category_the_tagger_lacks_fails_the_task_before_anyth
 
 
 def test_an_unknown_tagger_fails_naming_the_ones_there_are(tagger_hub, config):
-    with pytest.raises(Exception, match=r"^No tagger `nope`: one of wd-eva02-large, stand-in$"):
+    with pytest.raises(Exception, match=r"^No tagger `nope`: one of wd-eva02-large, pixai, pixai-fp16, stand-in$"):
         tag_frames(config, SHEET, tagger="nope")
 
 

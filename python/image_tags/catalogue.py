@@ -9,20 +9,20 @@ change, so a Flow that branches on them survives a model swap; a model's labels 
 Each entry says how its model takes an image (`Preprocessing`). Nothing outside this catalogue ever loads. A
 classifier entry's labels, input size and output are read from the model's own files when the entry is written;
 `scripts/golden.py` checks them against `meta.json` and the ONNX graph, and the golden tests hold the scores to
-imgutils. A tagger's are checked by `scripts/golden_tags.py`, and its golden tests hold the scores to its reference
-pipeline.
+imgutils. A tagger's are checked by `scripts/golden_tags.py` (PixAI's by its golden tests), and its golden tests hold
+the scores to its reference pipeline.
 """
 
 import csv
 import io
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 
 import numpy as np
 from PIL import Image
 
-from .preprocess import BGR, NCHW, NHWC, RGB, WHITE, Preprocessing
+from .preprocess import BGR, BLACK, NCHW, NHWC, RGB, WHITE, Preprocessing
 
 #: The tag of an answer whose top score is below the classifier's `minConfidence`: a result, never a failure.
 UNCERTAIN = "uncertain"
@@ -75,6 +75,8 @@ class Model(Pinned):
     kind: ClassVar[str] = "model"
     #: What a Task out of GPU memory says to do.
     out_of_gpu_memory: ClassVar[str] = "use a smaller `batchSize`, or the `cpu` build"
+    #: The graph's output: every classifier's is named so.
+    output: ClassVar[str] = "output"
 
     id: str
     title: str
@@ -252,7 +254,8 @@ class Category:
 class Tagger(Pinned):
     """One ONNX tagger: a score per tag of its tag list, `output[:, i]` for the list's row `i`, for any batch size. A
     tag of a category it names is handed on when its score is over that category's threshold; the tags whose code is
-    `rating_code` are its ratings, of which the highest is the label; any other tag is never handed on."""
+    `rating_code` are its ratings, of which the highest is the label (a rating has no threshold); any other tag is
+    never handed on."""
 
     kind: ClassVar[str] = "tagger"
     #: What a Task out of GPU memory says to do.
@@ -274,6 +277,14 @@ class Tagger(Pinned):
     tags_file: str = "selected_tags.csv"
     #: Both files are at the repo's top.
     name: str = ""
+    #: The graph's output, `[batch, tags]`; its input is `input`.
+    output: str = "output"
+    #: The precision of its weights, `fp32` or `fp16`: fp16 on the CPU is no quicker, which its warning says.
+    precision: str = "fp32"
+    #: The ratings as the result names them, `(tag list's name, result's name)` in the result's order, for a tagger
+    #: whose tag list names them otherwise than WD's `general`, `sensitive`, `questionable` and `explicit`: so a Flow
+    #: that routes on the rating works with any tagger. Empty to keep the tag list's names and order.
+    rating_names: tuple[tuple[str, str], ...] = ()
 
     @property
     def subject(self) -> str:
@@ -322,8 +333,61 @@ WD_EVA02_LARGE = Tagger(
     sigmoided=True,
 )
 
+#: PixAI v1.0, by its authors (`pixai-labs/pixai-tagger-v1.0` at `9fe10addf9326e292da8a85a98ea74cd91b41771`), who
+#: ship it as safetensors only: run as Mexes's ONNX conversion, which ticket 15 checked against their own pipeline.
+#: Its fp16 file is another entry, `PIXAI_FP16`, with the same thresholds: its scores differ by a few thousandths.
+PIXAI = Tagger(
+    id="pixai",
+    title="PixAI tagger v1.0 (PixAI; ONNX by Mexes): general tags, characters, copyrights, styles, meta and a rating",
+    repo="Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8",
+    commit="0800778563144a0e6fdf41ddadd84aae3cb0dbcf",
+    sha256="1cae6083f07be1e1757125802566c767005ae883e4504c00db4ee1ef93486dad",
+    # Mexes's: the names and order of the authors' `config.json`, with Danbooru's category codes.
+    tags_sha256="a9455cbf0a910d4a3890739f2f70bd986278f4594285ef1049121a03896e2a6d",
+    # As the authors' `RescalePadProcessor` prepares an image (not as Mexes's README says, bicubic).
+    preprocessing=Preprocessing(
+        size=(1008, 1008),
+        pad=BLACK,
+        resample=Image.Resampling.BILINEAR,
+        channels=RGB,
+        layout=NCHW,
+        scale=255.0,
+        mean=0.5,
+        std=0.5,
+        long_side_first=True,
+    ),
+    # The authors' `category_best_threshold`. Their rating threshold (0.41) is left out: the rating's label is its
+    # highest, as WD's is.
+    categories=(
+        Category("general", 0, 0.17),
+        Category("character", 4, 0.27),
+        Category("copyright", 3, 0.24),
+        Category("style", 1, 0.15),
+        Category("meta", 5, 0.17),
+    ),
+    rating_code=9,
+    # The conversion ends in a Sigmoid.
+    sigmoided=True,
+    output="prediction",
+    rating_names=(
+        ("rating:g", "general"),
+        ("rating:s", "sensitive"),
+        ("rating:q", "questionable"),
+        ("rating:e", "explicit"),
+    ),
+)
+
+PIXAI_FP16 = replace(
+    PIXAI,
+    id="pixai-fp16",
+    title="PixAI tagger v1.0 in fp16 (PixAI; ONNX by Mexes): half the size, for a GPU",
+    file="model_fp16.onnx",
+    sha256="cd668e6760bb58ec400ce1b0286e5c9133f83b543caac6a378406b7d56f8c303",
+    precision="fp16",
+)
+
 #: What a Node's `tagger` setting may name.
-TAGGERS: dict[str, Tagger] = {tagger.id: tagger for tagger in [WD_EVA02_LARGE]}
+TAGGERS: dict[str, Tagger] = {tagger.id: tagger for tagger in [WD_EVA02_LARGE, PIXAI, PIXAI_FP16]}
 
 DEFAULT_TAGGER = WD_EVA02_LARGE.id
 
@@ -362,5 +426,7 @@ def tag(
     rating = None
     if tagger.rating_code is not None:
         rated = {labels.names[i]: float(scores[i]) for i in np.flatnonzero(codes == tagger.rating_code)}
+        if tagger.rating_names:
+            rated = {ours: rated[theirs] for theirs, ours in tagger.rating_names}
         rating = {"label": max(rated, key=rated.get), "scores": rated}
     return {"tagger": tagger.id, "tags": tags, "rating": rating}

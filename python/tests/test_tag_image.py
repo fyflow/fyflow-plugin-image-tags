@@ -264,7 +264,7 @@ def test_max_tags_hands_on_the_highest_only(tagger_hub, config):
 
 
 def test_an_unknown_tagger_fails_naming_the_ones_there_are(tagger_hub, config):
-    with pytest.raises(Exception, match=r"^No tagger `nope`: one of wd-eva02-large, stand-in$"):
+    with pytest.raises(Exception, match=r"^No tagger `nope`: one of wd-eva02-large, pixai, pixai-fp16, stand-in$"):
         run(TagImage(config), tag_task(tagger="nope"))
 
 

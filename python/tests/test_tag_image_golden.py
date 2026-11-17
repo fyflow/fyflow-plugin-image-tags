@@ -23,7 +23,8 @@ def on_disk(tagger_id):
     return all((TAGGER_CACHE / pinned.local_path).is_file() for pinned in (tagger, tagger.tag_list))
 
 
-def tagger_params():
+def tagger_params(tagger_ids=tuple(GOLDEN)):
+    """Each tagger of `tagger_ids` as a test parameter, skipped unless it is on disk."""
     return [
         pytest.param(
             tagger_id,
@@ -31,7 +32,7 @@ def tagger_params():
                 not on_disk(tagger_id), reason=f"{tagger_id} is not in {TAGGER_CACHE} (it is never downloaded by tests)"
             ),
         )
-        for tagger_id in GOLDEN
+        for tagger_id in tagger_ids
     ]
 
 

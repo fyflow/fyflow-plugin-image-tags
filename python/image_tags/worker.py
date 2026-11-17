@@ -46,10 +46,13 @@ TAG_TASKS_AT_ONCE = 16
 
 def ran_on_the_cpu(tagger: Tagger) -> str:
     """The warning of a tagger's result when its session runs on the CPU."""
-    return (
+    warning = (
         f"{tagger.id} ran on the CPU, where a tagger is slow: a GPU build (`cuda` or `directml`) tags many times "
         "faster"
     )
+    if tagger.precision == "fp16":
+        warning += "; and fp16 on the CPU is slow too, no quicker than fp32, which is closer to the authors' scores"
+    return warning
 
 
 def _pool_options(config) -> dict:

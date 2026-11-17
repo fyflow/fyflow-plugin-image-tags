@@ -98,17 +98,19 @@ which scores every tag of its tag list. It hands on `{ path, tagger, tags, ratin
 
 - `tags`: `[{ name, score, category }]`, each tag whose score is over its category's threshold, the highest first.
   Names are the tagger's own (`long_hair`, `hatsune_miku`, underscores kept); categories are the tagger's
-  (`general`, `character` for `wd-eva02-large`).
-- `rating`: `{ label, scores }`: every rating's score (`general`, `sensitive`, `questionable`, `explicit`) and the
-  highest as the `label`; `null` for a tagger that rates nothing.
-- `warnings`: says so when the tagger ran on the CPU, where it is many times slower than on a GPU.
+  (`general`, `character` for `wd-eva02-large`; also `copyright`, `style` and `meta` for PixAI).
+- `rating`: `{ label, scores }`: every rating's score (`general`, `sensitive`, `questionable`, `explicit`, whatever
+  the tagger's own names for them) and the highest as the `label`; `null` for a tagger that rates nothing.
+- `warnings`: says so when the tagger ran on the CPU, where it is many times slower than on a GPU (and, for
+  `pixai-fp16`, that fp16 on the CPU is slow too: no quicker than fp32).
 
 Settings, all applied to the tagger's output, so Tasks with different settings still share forward passes:
 
 - **`thresholds`**: an object of category: threshold (0 to 1), **merged over the tagger's defaults**: a category
   it sets changes only that one, so `{ "character": 0.5 }` keeps `general` at its default. A category the tagger
   lacks fails the Task, naming the ones it has. Defaults for `wd-eva02-large`: general 0.35, character 0.85 (its
-  authors' Space's).
+  authors' Space's); for `pixai` and `pixai-fp16`: general 0.17, character 0.27, copyright 0.24, style 0.15, meta
+  0.17 (its authors').
 - **`maxTags`**: the most tags handed on, the highest first; left empty, every tag over its threshold.
 
 Like `ClassifyImage`, it is made for a Flow's `map`: one process per Profile runs up to 16 Tasks at once, and their
@@ -219,7 +221,8 @@ A Profile start-up field, apart from `batchSize`: the most images in one forward
 the images of `TagImage`'s Tasks running at once, or the frames of one `TagFrames` Task.
 A tagger is over 1 GB and each image of a batch needs GPU memory on top of it. A tagger that does not fit in the GPU's
 memory fails the Task with `<tagger> needs more GPU memory than this GPU has:`, then what to do: a smaller tagger,
-a smaller `tagBatchSize`, or the `cpu` build. It never falls back to the CPU by itself.
+a smaller `tagBatchSize`, or the `cpu` build. It never falls back to the CPU by itself. PixAI takes a 1008×1008
+image: on a 4 GB GPU, `pixai` and `pixai-fp16` need a `tagBatchSize` of 1.
 
 ## Models
 
@@ -266,6 +269,9 @@ no `<name>`):
 | `anime_classification` | `deepghs/anime_classification/5ee62e06f5f4/mobilenetv3_v1.5_dist/model.onnx` | https://huggingface.co/deepghs/anime_classification/resolve/5ee62e06f5f4cd68a1c2f3bc5dc9805e827d37df/mobilenetv3_v1.5_dist/model.onnx |
 | `wd-eva02-large` | `SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394/model.onnx` | https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/resolve/c5303bb7139430db980e4c680a778fe79d72b541/model.onnx |
 | `wd-eva02-large`'s tag list | `SmilingWolf/wd-eva02-large-tagger-v3/c5303bb71394/selected_tags.csv` | https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3/resolve/c5303bb7139430db980e4c680a778fe79d72b541/selected_tags.csv |
+| `pixai` | `Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/080077856314/model.onnx` | https://huggingface.co/Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/resolve/0800778563144a0e6fdf41ddadd84aae3cb0dbcf/model.onnx |
+| `pixai-fp16` | `Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/080077856314/model_fp16.onnx` | https://huggingface.co/Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/resolve/0800778563144a0e6fdf41ddadd84aae3cb0dbcf/model_fp16.onnx |
+| `pixai`'s and `pixai-fp16`'s tag list | `Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/080077856314/selected_tags.csv` | https://huggingface.co/Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8/resolve/0800778563144a0e6fdf41ddadd84aae3cb0dbcf/selected_tags.csv |
 
 A machine that has run the Plugin online already holds this folder: its data directory's `models` folder can be
 copied whole.
@@ -277,11 +283,28 @@ What `TagImage` and `TagFrames` may run (their `tagger` setting):
 | Tagger | Model | Size | Categories (default thresholds) | Rating |
 | --- | --- | --- | --- | --- |
 | `wd-eva02-large` (default) | [`SmilingWolf/wd-eva02-large-tagger-v3`](https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3) at `c5303bb7139430db980e4c680a778fe79d72b541` (tag `v1.0`), its `model.onnx` and `selected_tags.csv` | about 1.26 GB, downloaded on first use | general (0.35), character (0.85): 8,106 general tags, 2,751 characters | general, sensitive, questionable, explicit |
+| `pixai` | PixAI tagger v1.0, as [`Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8`](https://huggingface.co/Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8) at `0800778563144a0e6fdf41ddadd84aae3cb0dbcf`, its `model.onnx` (fp32) and `selected_tags.csv` | about 1.98 GB, downloaded on first use | general (0.17), character (0.27), copyright (0.24), style (0.15), meta (0.17): 15,043 general tags, 8,308 characters, 2,460 copyrights, 4,917 styles, 145 meta | general, sensitive, questionable, explicit |
+| `pixai-fp16` | the same, its `model_fp16.onnx` (fp16) | about 0.99 GB, downloaded on first use | as `pixai` | as `pixai` |
 
 `wd-eva02-large` is by SmilingWolf, under the Apache-2.0 licence, trained on Danbooru's tags. The Plugin prepares an
 image as the authors' [Space](https://huggingface.co/spaces/SmilingWolf/wd-tagger) (`app.py`) does: what is
 see-through made white, padded to a square on white, resized bicubic to 448×448, BGR, 0 to 255; its golden tests hold
 its scores to a copy of those steps (`pnpm golden:tags`).
+
+PixAI tagger v1.0 is by [PixAI](https://huggingface.co/pixai-labs), published as
+[`pixai-labs/pixai-tagger-v1.0`](https://huggingface.co/pixai-labs/pixai-tagger-v1.0) (pinned at
+`9fe10addf9326e292da8a85a98ea74cd91b41771`) under the Apache-2.0 licence, which its model card's metadata declares
+(the repo has no LICENSE file). Its authors ship PyTorch weights only, so the Plugin runs the community's ONNX
+conversion by Mexes, offered under the same licence (declared the same way): `pixai` is its fp32 file, `pixai-fp16`
+its fp16 one. The Plugin prepares an image as the authors' `RescalePadProcessor` does (bilinear, not bicubic as the
+conversion's README says): what is see-through made white, the long side resized to 1008 (in float, not in whole
+levels), centred on black, RGB, `(x - 0.5) / 0.5`. Checked against the authors' own pipeline on the test images,
+`pixai` is within about 0.002 of its scores and `pixai-fp16` within about 0.005, so both keep the authors'
+thresholds; the golden tests hold both to it (`pnpm golden:pixai`). One difference is kept on purpose: the authors'
+pipeline ignores an RGB image's colour key, which the Plugin makes white, as for every model. `pixai-fp16` is half
+the size, for a GPU; on the CPU it is no quicker than `pixai`. The authors' rating threshold (0.41) is not used: the
+rating's `label` is always the highest, as for `wd-eva02-large`, and the ratings (`rating:g` and so on in the tag
+list) are named as `wd-eva02-large`'s, so a Flow that routes on the rating works with either tagger.
 
 **Thresholds merge** over the chosen tagger's defaults, category by category: `{ "character": 0.5 }` lowers the
 character threshold and keeps the general one at 0.35. A tag is handed on when its score is over (not at) its
@@ -306,6 +329,10 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 - `pnpm golden:tags [-- --from python/.cache/models]`: writes each tagger's top tags and ratings for the test images,
   prepared by its reference pipeline, not the Plugin's code (`python/tests/fixtures/golden-tags.json`); run it by hand
   when a catalogue tagger changes. Without `--from`, it downloads each tagger at its pinned commit.
+- `pnpm golden:pixai [-- --from <folder>]`: writes PixAI's top tags and ratings for the test images from its
+  authors' own pipeline (`python/tests/fixtures/golden-pixai.json`), in an environment of its own with PyTorch for
+  the CPU; it downloads about 2 GB of the authors' weights at their pinned commit (or takes them from `--from`) and
+  takes some 9 minutes. Run it by hand when PixAI's pins change.
 - `pnpm eval`: measures the classifiers on labelled videos and images; run by hand before a release is tagged (see
   [Eval](#eval)).
 
@@ -384,6 +411,11 @@ own licence, which applies to whoever runs them:
 - [`deepghs/anime_classification`](https://huggingface.co/deepghs/anime_classification): MIT.
 - [`SmilingWolf/wd-eva02-large-tagger-v3`](https://huggingface.co/SmilingWolf/wd-eva02-large-tagger-v3): Apache-2.0,
   by SmilingWolf. The Plugin prepares images as its authors' Space does (see [Taggers](#taggers)).
+- [`pixai-labs/pixai-tagger-v1.0`](https://huggingface.co/pixai-labs/pixai-tagger-v1.0): Apache-2.0 (declared in its
+  model card's metadata), by PixAI; run as
+  [`Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8`](https://huggingface.co/Mexes/pixai-tagger-v1.0-onnx-fp32-fp16-int8),
+  Mexes's ONNX conversion of it, under the same licence (declared the same way). The Plugin prepares images as
+  PixAI's own pipeline does (see [Taggers](#taggers)).
 
 The classifiers are by [DeepGHS](https://huggingface.co/deepghs). The Plugin prepares images as their
 [imgutils](https://github.com/deepghs/imgutils) does, and its tests hold its scores to imgutils' (`pnpm golden`).
