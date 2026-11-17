@@ -1,8 +1,8 @@
 # fyflow-plugin-image-tags
 
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
-CG or live action, of one image or of a whole video from its frames; and tags an image with a local tagger:
-characters, general tags and a rating (see `.scratch/image-tags/spec.md`).
+CG or live action, of one image or of a whole video from its frames; and tags an image, or each frame of a video,
+with a local tagger: characters, general tags and a rating (see `.scratch/image-tags/spec.md`).
 
 Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv); 0.12.0 or later adds the
 [Data](#data) link. Install it from **Browse** on the
@@ -113,7 +113,26 @@ Settings, all applied to the tagger's output, so Tasks with different settings s
 
 Like `ClassifyImage`, it is made for a Flow's `map`: one process per Profile runs up to 16 Tasks at once, and their
 images go through the tagger in shared batches of up to [`tagBatchSize`](#tagbatchsize) (4 unless the Profile says
-otherwise), a batch waiting at most 20 ms for more. A frame sheet is tagged as one image.
+otherwise), a batch waiting at most 20 ms for more. A frame sheet is tagged as one image: `TagFrames` tags its frames
+one by one.
+
+### `TagFrames`
+
+A whole video per Task, from its frames: `TagImage`'s settings (`tagger`, `thresholds`, `maxTags`), and `path` in its
+input read as [`ClassifyFrames`](#classifyframes) reads it: a frame sheet (each frame cut out, with its timestamp), a
+folder (its images in name order, at most 1000, no timestamps) or one image. It hands on
+`{ path, video?, tagger, frames, warnings? }`:
+
+- `frames`: each frame's `{ timestamp, tags, rating }`, in the sheet's or folder's order, `tags` and `rating` as
+  `TagImage` gives them for an image, with the same settings applied to every frame;
+- `video` and `warnings` as `ClassifyFrames` gives them (timestamps drawn on a sheet, a folder's image outside the
+  Allowed roots), and the warning of a tagger run on the CPU.
+
+It hands on each frame's own answer only: summing the frames up (the tags most frames have, say) is left to the Flow.
+Frames go through the tagger [`tagBatchSize`](#tagbatchsize) at a time; the Task's progress ("Tagged 8 of 16
+frames") moves on, and a Cancel is looked at, after each batch. One process per Profile runs two Tasks at once, as
+`ClassifyFrames`' does. It has a pool of its own, apart from `TagImage`'s (fyflow gives each Node Type one), holding
+the same `gpu` unit: so the two take turns on the GPU, and a GPU never holds two copies of the tagger.
 
 ## Allowed roots
 
@@ -139,7 +158,7 @@ Every Node Type holds what it uses per process, not per Task: while its process 
 Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group (every one, on a machine with fewer than 4
 logical processors), and a Task holds nothing of its own. Tasks waiting on a shared forward pass use no processor, and
 a forward pass runs on as many threads as the `cpu` units held. On the `cpu` build a pool holds the same `cpu` units
-and no `gpu` unit. With one GPU unit, the Node Types' GPU pools (`TagImage` has a pool of its own too), and each
+and no `gpu` unit. With one GPU unit, the Node Types' GPU pools (`TagImage` and `TagFrames` have pools of their own too), and each
 Profile's, take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s more).
 That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks alternating
 between them. A Profile can change the idle time (`idleTimeout`) for each Node Type.
@@ -183,7 +202,7 @@ On `directml`:
   order, not by speed: unit 1 may be an integrated GPU, or the same GPU as unit 0. Keep the `gpu` group at 1 unit
   on a `directml` Host.
 
-With one `gpu` unit, `ClassifyImage`, `ClassifyFrames` and `TagImage` take turns on the GPU, as above; on the `cpu` build they
+With one `gpu` unit, `ClassifyImage`, `ClassifyFrames`, `TagImage` and `TagFrames` take turns on the GPU, as above; on the `cpu` build they
 hold no `gpu` unit, so they run beside each other and beside GPU pools. Set [`batchSize`](#batchsize) for the GPU's
 memory.
 
@@ -196,7 +215,8 @@ batch holds one image per Task running.
 
 ### `tagBatchSize`
 
-A Profile start-up field, apart from `batchSize`: the most images in one forward pass of a tagger, 4 if left empty.
+A Profile start-up field, apart from `batchSize`: the most images in one forward pass of a tagger, 4 if left empty:
+the images of `TagImage`'s Tasks running at once, or the frames of one `TagFrames` Task.
 A tagger is over 1 GB and each image of a batch needs GPU memory on top of it. A tagger that does not fit in the GPU's
 memory fails the Task with `<tagger> needs more GPU memory than this GPU has:`, then what to do: a smaller tagger,
 a smaller `tagBatchSize`, or the `cpu` build. It never falls back to the CPU by itself.
@@ -251,6 +271,8 @@ A machine that has run the Plugin online already holds this folder: its data dir
 copied whole.
 
 ## Taggers
+
+What `TagImage` and `TagFrames` may run (their `tagger` setting):
 
 | Tagger | Model | Size | Categories (default thresholds) | Rating |
 | --- | --- | --- | --- | --- |

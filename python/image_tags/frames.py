@@ -1,4 +1,5 @@
-"""The frames a `ClassifyFrames` Task classifies: those of a frame sheet, the images of a folder, or one image.
+"""The frames a `ClassifyFrames` or `TagFrames` Task reads: those of a frame sheet, the images of a folder, or one
+image.
 
 A **frame sheet** is a JPEG made by the video-thumbnail Plugin's `thumbs-collage` service: a collage of a video's
 frames, whose comment (COM) segment holds the service's JSON. Of that JSON this reads `frames` (per cell, null or
@@ -21,7 +22,8 @@ from PIL import Image, UnidentifiedImageError
 
 from .preprocess import open_image, to_rgb
 
-#: More frames than this in a folder fail the Task: a large set belongs in a Flow `map` over `ClassifyImage`.
+#: More frames than this in a folder fail the Task: a large set belongs in a Flow `map` over `ClassifyImage` or
+#: `TagImage`.
 MAX_FOLDER_IMAGES = 1000
 
 TIMESTAMPS_DRAWN = (
@@ -36,8 +38,8 @@ SHEET_AS_ONE_IMAGE = (
 
 @dataclass
 class Frame:
-    """One frame to classify: `load()` gives it in RGB, read when its batch comes. `timestamp` is where in the video
-    it is, in seconds, when known."""
+    """One frame to classify or tag: `load()` gives it in RGB, read when its batch comes. `timestamp` is where in the
+    video it is, in seconds, when known."""
 
     load: Callable[[], Image.Image]
     timestamp: float | None = None
@@ -135,8 +137,8 @@ def _folder(path: str, allowed_path: AllowedPath) -> Frames:
         images.append(file)
         if len(images) > MAX_FOLDER_IMAGES:
             raise ValueError(
-                f"The folder has more than {MAX_FOLDER_IMAGES} images: {path} (classify a large set with a map over "
-                "ClassifyImage)"
+                f"The folder has more than {MAX_FOLDER_IMAGES} images: {path} (a large set belongs in a map over "
+                "ClassifyImage or TagImage)"
             )
     if not images:
         if refused:

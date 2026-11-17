@@ -269,7 +269,8 @@ const profileSchema = {
       description:
         `The most images in one forward pass of a tagger; left empty, ${DEFAULT_TAG_BATCH_SIZE}. A tagger is over ` +
         "1 GB, and a batch needs GPU memory on top of it: lower it if a Task fails for want of GPU memory. TagImage " +
-        "batches the images of the Tasks running at once. Takes effect at the next Reload.",
+        "batches the images of the Tasks running at once; TagFrames runs a Task's frames that many at a time. " +
+        "Takes effect at the next Reload.",
     },
   },
   additionalProperties: false,
@@ -494,46 +495,51 @@ const RATING_EXAMPLE = {
   scores: { general: 0.86, sensitive: 0.12, questionable: 0.01, explicit: 0 },
 };
 
+// What a tagger hands on of one image: TagImage's result, and each frame of TagFrames'.
+const tagProperties = {
+  tags: {
+    type: "array",
+    description:
+      "the tags whose score is over their category's threshold, the highest first, at most maxTags, named as the " +
+      "tagger names them (underscores kept)",
+    items: {
+      type: "object",
+      required: ["name", "score", "category"],
+      properties: {
+        name: { type: "string", description: "the tag, as the tagger's tag list has it" },
+        score: { type: "number", description: "its score, from 0 to 1" },
+        category: {
+          type: "string",
+          description: `its category, as the tagger names it: ${Object.entries(TAGGERS)
+            .map(([id, { thresholds }]) => `${id}: ${Object.keys(thresholds).join(", ")}`)
+            .join("; ")}`,
+        },
+      },
+    },
+  },
+  // Keyed by the tagger's rating labels, so `scores` can only say "an object".
+  rating: {
+    type: ["object", "null"],
+    required: ["label", "scores"],
+    description: "the tagger's rating of the image, or null for a tagger that rates nothing",
+    properties: {
+      label: { type: "string", description: "the rating with the highest score" },
+      scores: {
+        type: "object",
+        description:
+          "every rating's score, from 0 to 1, by rating (general, sensitive, questionable, explicit)",
+      },
+    },
+  },
+};
+
 const tagOutputSchema = {
   type: "object",
   required: ["path", "tagger", "tags", "rating"],
   properties: {
     path: { type: "string", description: "the image's absolute path" },
     tagger: { type: "string", description: "the tagger that ran" },
-    tags: {
-      type: "array",
-      description:
-        "the tags whose score is over their category's threshold, the highest first, at most maxTags, named as the " +
-        "tagger names them (underscores kept)",
-      items: {
-        type: "object",
-        required: ["name", "score", "category"],
-        properties: {
-          name: { type: "string", description: "the tag, as the tagger's tag list has it" },
-          score: { type: "number", description: "its score, from 0 to 1" },
-          category: {
-            type: "string",
-            description: `its category, as the tagger names it: ${Object.entries(TAGGERS)
-              .map(([id, { thresholds }]) => `${id}: ${Object.keys(thresholds).join(", ")}`)
-              .join("; ")}`,
-          },
-        },
-      },
-    },
-    // Keyed by the tagger's rating labels, so `scores` can only say "an object".
-    rating: {
-      type: ["object", "null"],
-      required: ["label", "scores"],
-      description: "the tagger's rating of the image, or null for a tagger that rates nothing",
-      properties: {
-        label: { type: "string", description: "the rating with the highest score" },
-        scores: {
-          type: "object",
-          description:
-            "every rating's score, from 0 to 1, by rating (general, sensitive, questionable, explicit)",
-        },
-      },
-    },
+    ...tagProperties,
     warnings: {
       type: "array",
       items: { type: "string" },
@@ -551,6 +557,62 @@ const tagOutputSchema = {
         { name: "twintails", score: 0.81, category: "general" },
       ],
       rating: RATING_EXAMPLE,
+    },
+  ],
+};
+
+const tagFramesOutputSchema = {
+  type: "object",
+  required: ["path", "tagger", "frames"],
+  properties: {
+    path: { type: "string", description: "the frame sheet's, folder's or image's absolute path" },
+    video: resultProperties.video,
+    tagger: { type: "string", description: "the tagger that ran" },
+    frames: {
+      type: "array",
+      description:
+        "each frame's own tags and rating, in the sheet's or folder's order, as TagImage gives them for an image",
+      items: {
+        type: "object",
+        required: ["timestamp", "tags", "rating"],
+        properties: {
+          timestamp: framesOutputSchema.properties.frames.items.properties.timestamp,
+          ...tagProperties,
+        },
+      },
+    },
+    warnings: {
+      type: "array",
+      items: { type: "string" },
+      description:
+        "what may make the answer less good or slower than it could be (timestamps drawn on a sheet's frames, a " +
+        "folder's image outside the Allowed roots, a tagger run on the CPU)",
+    },
+  },
+  examples: [
+    {
+      path: EXAMPLE_SHEET,
+      video: "D:/Videos/episode-01.mkv",
+      tagger: "wd-eva02-large",
+      frames: [
+        {
+          timestamp: 312.4,
+          tags: [
+            { name: "1girl", score: 0.97, category: "general" },
+            { name: "hatsune_miku", score: 0.95, category: "character" },
+            { name: "twintails", score: 0.81, category: "general" },
+          ],
+          rating: RATING_EXAMPLE,
+        },
+        {
+          timestamp: 624.8,
+          tags: [
+            { name: "outdoors", score: 0.9, category: "general" },
+            { name: "night", score: 0.84, category: "general" },
+          ],
+          rating: RATING_EXAMPLE,
+        },
+      ],
     },
   ],
 };
@@ -599,6 +661,12 @@ export default definePlugin({
       settingsSchema: tagSettingsSchema,
       inputSchema,
       outputSchema: tagOutputSchema,
+    },
+    tagFrames: {
+      python: "image_tags.worker:TagFrames",
+      settingsSchema: tagSettingsSchema,
+      inputSchema: framesInputSchema,
+      outputSchema: tagFramesOutputSchema,
     },
   },
   nodeTypes: {
@@ -652,6 +720,24 @@ export default definePlugin({
       },
       icon: "tag",
       description: "Tags one image (characters, general tags and a rating) with a local tagger.",
+    },
+    TagFrames: {
+      worker: "tagFrames",
+      profile: ["modelDir", "tagBatchSize"],
+      // A Worker and pool of its own, as ClassifyFrames has: fyflow gives each Node Type its own pool, so it cannot
+      // share TagImage's process and session. It holds the same resident units, so the two take turns on the `gpu`
+      // unit and a GPU never holds two copies of the tagger. Two Tasks at once, so that one Task's decoding and
+      // cutting out of frames overlaps the other's forward passes, each `tagBatchSize` frames.
+      pool: {
+        maxThreads: 1,
+        maxConcurrentTasks: 2,
+        idleTimeout: 5_000,
+        residentGroups: RESIDENT_GROUPS,
+        variants: POOL_VARIANTS,
+      },
+      icon: "image",
+      description:
+        "Tags each frame of a VideoThumbnail frame sheet, or a folder of frames (characters, general tags and a rating), with a local tagger.",
     },
   },
 });

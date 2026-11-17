@@ -70,8 +70,10 @@ const registry = (): RegistryDocument => ({
 
 /** The Plugin's classifying Node Types: one image per Task, and a sheet or folder of frames per Task. */
 const NODE_TYPES = ["ClassifyImage", "ClassifyFrames"] as const;
-/** Every Node Type: the classifying ones, and tagging one image per Task. */
-const ALL_NODE_TYPES = [...NODE_TYPES, "TagImage"] as const;
+/** The Plugin's tagging Node Types: one image per Task, and a sheet or folder of frames per Task. */
+const TAG_NODE_TYPES = ["TagImage", "TagFrames"] as const;
+/** Every Node Type: the classifying ones and the tagging ones. */
+const ALL_NODE_TYPES = [...NODE_TYPES, ...TAG_NODE_TYPES] as const;
 
 /** Every model file the Plugin downloads, as `status()` and `data()` see them: the classifiers' and the taggers'. */
 const MODEL_FILES: Record<string, ModelFile> = {
@@ -504,9 +506,62 @@ describe("TagImage", () => {
     expect(schema.properties.tagBatchSize?.description).toContain(`left empty, ${DEFAULT_TAG_BATCH_SIZE}`);
     expect(DEFAULT_TAG_BATCH_SIZE).toBe(4);
     expect(plugin.profile?.startup).toContain("tagBatchSize");
-    expect(plugin.nodeTypes?.TagImage?.profile).toEqual(["modelDir", "tagBatchSize"]);
+    for (const type of TAG_NODE_TYPES)
+      expect(plugin.nodeTypes?.[type]?.profile).toEqual(["modelDir", "tagBatchSize"]);
     for (const type of NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).not.toContain("tagBatchSize");
     expect(pythonWorker().defaultTagBatchSize).toBe(DEFAULT_TAG_BATCH_SIZE);
+  });
+});
+
+describe("TagFrames", () => {
+  const worker = plugin.workers?.tagFrames;
+  const outputSchema = worker?.outputSchema as JsonSchema & { required: string[]; examples: unknown[] };
+
+  it("runs two Tasks at a time in one process, on a Worker of its own holding the GPU as TagImage's does", () => {
+    const frames = plugin.nodeTypes?.TagFrames;
+    expect(frames?.worker).toBe("tagFrames");
+    expect((worker as { python?: string } | undefined)?.python).toBe("image_tags.worker:TagFrames");
+    expect(frames?.pool).toMatchObject({ maxThreads: 1, maxConcurrentTasks: 2 });
+    // The same resident units, so it takes turns with TagImage on the `gpu` unit.
+    expect(frames?.pool?.residentGroups).toEqual(plugin.nodeTypes?.TagImage?.pool?.residentGroups);
+    expect(frames?.pool?.variants).toEqual(plugin.nodeTypes?.TagImage?.pool?.variants);
+  });
+
+  it("takes TagImage's settings and ClassifyFrames' input", () => {
+    expect(worker?.settingsSchema).toBe(plugin.workers?.tagImage?.settingsSchema);
+    expect(worker?.inputSchema).toBe(plugin.workers?.classifyFrames?.inputSchema);
+    const tagFramesFlowOf = (settings: Record<string, unknown>) => flowOf(settings, "TagFrames");
+    expect(findingsOf(tagFramesFlowOf({}))).toEqual([]);
+    expect(findingsOf(tagFramesFlowOf({ thresholds: { character: 0.5 }, maxTags: 10 }))).toEqual([]);
+    expect(findingsOf(tagFramesFlowOf({ maxTags: 0 })).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("hands on each frame's timestamp, tags and rating, its examples among what it hands on", () => {
+    expect(outputSchema.required).toEqual(expect.arrayContaining(["path", "tagger", "frames"]));
+    expect(outputSchema.examples.length).toBeGreaterThan(0);
+    for (const example of outputSchema.examples) expect(findings(outputSchema, example)).toEqual([]);
+    const rating = {
+      label: "general",
+      scores: { general: 0.8, sensitive: 0.15, questionable: 0.03, explicit: 0.01 },
+    };
+    const result = {
+      path: "D:/Thumbnails/clip.jpg",
+      video: "D:/Videos/clip.mp4",
+      tagger: "wd-eva02-large",
+      frames: [
+        { timestamp: 1.5, tags: [{ name: "1girl", score: 0.98, category: "general" }], rating },
+        { timestamp: null, tags: [], rating: null },
+      ],
+      warnings: ["timestamps drawn"],
+    };
+    expect(findings(outputSchema, result)).toEqual([]);
+    expect(
+      findings(outputSchema, { ...result, frames: [{ timestamp: "1.5", tags: [], rating }] }),
+    ).not.toEqual([]);
+    expect(findings(outputSchema, { ...result, frames: [{ timestamp: 1.5, tags: [] }] })).not.toEqual([]);
+    expect(
+      findings(outputSchema, { ...result, frames: [{ timestamp: 1.5, tags: [{ name: "1girl" }], rating }] }),
+    ).not.toEqual([]);
   });
 });
 

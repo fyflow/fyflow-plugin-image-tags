@@ -1,18 +1,19 @@
-"""Allowed roots (ADR-0030 in fyflow-app): both Node Types read only what their Task's reach, `settings["roots"]`,
-lets them, and a refused path fails the Task with what the Host's check says."""
+"""Allowed roots (ADR-0030 in fyflow-app): every Node Type reads only what its Task's reach, `settings["roots"]`,
+lets it, and a refused path fails the Task with what the Host's check says."""
 
 import os
 import threading
 
 import pytest
 
-from image_tags.worker import ClassifyFrames, ClassifyImage
+from image_tags.worker import ClassifyFrames, ClassifyImage, TagFrames, TagImage
 from tests.conftest import IMAGES, Context, Task, run
 
 FIXTURES_ROOT = [{"path": str(IMAGES.parent), "access": "read"}]
 ANIME = IMAGES / "anime-02-train-window.jpg"
 SHEET = IMAGES.parent / "sheets" / "sample.jpg"
-WORKERS = [ClassifyImage, ClassifyFrames]
+CLASSIFYING = [ClassifyImage, ClassifyFrames]
+WORKERS = [*CLASSIFYING, TagImage, TagFrames]
 
 
 def link(link_path, target):
@@ -46,7 +47,7 @@ def test_a_relative_path_is_refused(config, worker_class):
         run(worker_class(config), Task({"path": "anime.jpg"}, roots=FIXTURES_ROOT))
 
 
-@pytest.mark.parametrize("worker_class", WORKERS)
+@pytest.mark.parametrize("worker_class", CLASSIFYING)
 def test_a_path_inside_the_reach_is_classified_and_named_as_given(hub, config, worker_class):
     result = run(worker_class(config), Task({"path": str(ANIME)}, {"classifier": "anime_real"}, roots=FIXTURES_ROOT))
 

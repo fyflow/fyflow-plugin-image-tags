@@ -1,6 +1,7 @@
 """The Plugin's Python Workers, as the Host builds them: one instance per Python process, `run` once per Task."""
 
 import asyncio
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -22,7 +23,7 @@ from .catalogue import (
     thresholds_of,
 )
 from .devices import device_of
-from .frames import SHEET_AS_ONE_IMAGE, read_frames, sheet_of
+from .frames import SHEET_AS_ONE_IMAGE, Frames, read_frames, sheet_of
 from .models import Cancelled, Models
 from .preprocess import Preprocessing, open_image, to_input, to_rgb
 
@@ -68,10 +69,43 @@ def _tasks_at_once(config, default: int) -> int:
     return _pool_options(config).get("maxConcurrentTasks") or default
 
 
+def _frame_by_frame(
+    source: Frames, batch_size: int, score: Callable[[list[Image.Image]], np.ndarray], verbs: tuple[str, str], ctx
+) -> np.ndarray:
+    """`score`'s rows for every frame of `source`, in order, `batch_size` frames at a time, each batch's frames read
+    only when it comes. The Task says how far it has got before the first batch and after each (`verbs`: what it is
+    doing, then what it has done, as "Tagging" and "Tagged"), and a Cancel stops it before its next batch."""
+    doing, did = verbs
+    total = len(source.frames)
+    ctx.progress(0.0, f"{doing} 0 of {total} frames")
+    rows = []
+    for start in range(0, total, batch_size):
+        if getattr(ctx, "cancelled", False):
+            raise Cancelled(f"Cancelled after {start} of {total} frames")
+        batch = source.frames[start : start + batch_size]
+        rows.append(score([frame.load() for frame in batch]))
+        done = start + len(batch)
+        ctx.progress(done / total, f"{did} {done} of {total} frames")
+    return np.concatenate(rows)
+
+
+def _frames_result(path: str, source: Frames, fields: dict, warnings: list[str] | None = None) -> dict:
+    """A frames Task's result: the path it was given, the sheet's video when it names one, `fields`, then the
+    warnings of reading the frames and `warnings`, when there are any."""
+    result = {"path": path}
+    if source.video is not None:
+        result["video"] = source.video
+    result.update(fields)
+    if every := [*source.warnings, *(warnings or [])]:
+        result["warnings"] = every
+    return result
+
+
 class _Worker:
-    """What every Worker shares: the models, and how a Task names its image (`the image to <verb>`)."""
+    """What every Worker shares: the models, and how a Task names what it reads (`<what> to <verb>`)."""
 
     verb = "classify"
+    what = "the image"
 
     def __init__(self, config, pool=None):
         # A Profile start-up field: `modelDir`, the folder of an offline machine's models (then nothing downloads).
@@ -88,7 +122,7 @@ class _Worker:
     def _path(self, task) -> str:
         path = task.input.get("path") if isinstance(task.input, dict) else None
         if not isinstance(path, str) or path == "":
-            raise ValueError(f"The input has no `path`: the image to {self.verb}")
+            raise ValueError(f"The input has no `path`: {self.what} to {self.verb}")
         return path
 
     def teardown(self):
@@ -220,21 +254,16 @@ class ClassifyFrames(_Classify):
         classifier = self._classifier(task)
         min_confidence = task.settings.get("minConfidence")
         source = read_frames(path, ctx.allowed_path)
-        total = len(source.frames)
         # Each model's session first, so that loading it is said as such, then what the first batch does.
         for model in classifier.models:
             self.models.session(model, ctx)
-        ctx.progress(0.0, f"Classifying 0 of {total} frames")
-
-        per_frame = []
-        for start in range(0, total, self.batch_size):
-            if getattr(ctx, "cancelled", False):
-                raise Cancelled(f"Cancelled after {start} of {total} frames")
-            batch = source.frames[start : start + self.batch_size]
-            per_frame.append(self._score(classifier, [frame.load() for frame in batch], ctx))
-            done = start + len(batch)
-            ctx.progress(done / total, f"Classified {done} of {total} frames")
-        scores = np.concatenate(per_frame)
+        scores = _frame_by_frame(
+            source,
+            self.batch_size,
+            lambda images: self._score(classifier, images, ctx),
+            ("Classifying", "Classified"),
+            ctx,
+        )
 
         overall = answer(classifier, scores.mean(axis=0), min_confidence)
         # The label `confidence` is for: the tag, or the top label when the tag is uncertain.
@@ -244,25 +273,13 @@ class ClassifyFrames(_Classify):
             own = answer(classifier, row, min_confidence)
             frames.append({"timestamp": frame.timestamp, "tag": own["tag"], "scores": own["scores"]})
 
-        result = {"path": path}
-        if source.video is not None:
-            result["video"] = source.video
-        result.update(overall)
-        result["agreement"] = float(np.mean(scores.argmax(axis=1) == top))
-        result["frames"] = frames
-        if source.warnings:
-            result["warnings"] = source.warnings
-        return result
+        agreement = float(np.mean(scores.argmax(axis=1) == top))
+        return _frames_result(path, source, {**overall, "agreement": agreement, "frames": frames})
 
 
-class TagImage(_Worker):
-    """One image per Task, through one tagger of the catalogue (the `tagger` setting): the tags over their category's
-    threshold (the `thresholds` setting, merged over the tagger's defaults), highest first, at most `maxTags`; and the
-    tagger's rating. Its path must be in the Task's reach (Allowed roots), else the Task fails saying why.
-
-    The Tasks of a process run at once on the shim's event loop, as `ClassifyImage`'s do, and share the tagger's
-    forward passes, `tagBatchSize` images at most to one: thresholds and `maxTags` act on the output, so Tasks with
-    different settings share them too."""
+class _Tag(_Worker):
+    """What both tagging Workers share: how a Task names its tagger and sets its thresholds and `maxTags`,
+    `tagBatchSize`, getting the tagger ready, and the warning of a tagger run on the CPU."""
 
     verb = "tag"
 
@@ -270,26 +287,6 @@ class TagImage(_Worker):
         super().__init__(config, pool)
         # A Profile start-up field: the most images in one forward pass of a tagger.
         self.batch_size = config.get("tagBatchSize") or DEFAULT_TAG_BATCH_SIZE
-        self._passes = _Passes(self.models, self.batch_size, _tasks_at_once(config, TAG_TASKS_AT_ONCE))
-
-    async def run(self, task, ctx):
-        path = self._path(task)
-        tagger = self._tagger(task)
-        # Settings are checked before anything is read or downloaded.
-        thresholds = thresholds_of(tagger, task.settings.get("thresholds"))
-        max_tags = task.settings.get("maxTags")
-        input = await self._passes.blocking(self._read, path, tagger, ctx)
-        # The tag list and the session, downloading either if need be: blocking, so on a thread. A Cancel ends this
-        # await at once, as `ClassifyImage`'s.
-        labels = await self._passes.blocking(self._ready, tagger, ctx)
-        # From the Task's own coroutine: the first forward pass may be slow (cuDNN searches for its algorithms then).
-        ctx.progress(0.0, "Tagging")
-        row = await self._passes.row(tagger, input)
-
-        result = {"path": path, **tag(tagger, labels, row, thresholds, max_tags)}
-        if self.models.runs_on_cpu(tagger):
-            result["warnings"] = [ran_on_the_cpu(tagger)]
-        return result
 
     @staticmethod
     def _tagger(task) -> Tagger:
@@ -300,9 +297,10 @@ class TagImage(_Worker):
         return tagger
 
     @staticmethod
-    def _read(path: str, tagger: Tagger, ctx) -> np.ndarray:
-        """The image as the tagger takes it, read where its path really leads once the Task's reach allows it."""
-        return to_input(to_rgb(open_image(ctx.allowed_path(path, "read"))), tagger.preprocessing)
+    def _settings(task, tagger: Tagger) -> tuple[dict[str, float], int | None]:
+        """The Task's thresholds, merged over the tagger's defaults, and its `maxTags`. Called before anything is read
+        or downloaded, so a threshold the tagger has no category for fails the Task at once."""
+        return thresholds_of(tagger, task.settings.get("thresholds")), task.settings.get("maxTags")
 
     def _ready(self, tagger: Tagger, ctx) -> Labels:
         """The tagger's tag list, then its session, each downloaded first if need be: so the model's download is the
@@ -311,6 +309,79 @@ class TagImage(_Worker):
         self.models.session(tagger, ctx)
         return labels
 
+    def _warnings(self, tagger: Tagger) -> list[str]:
+        """The result's warnings of running the tagger: that it ran on the CPU, when it did."""
+        return [ran_on_the_cpu(tagger)] if self.models.runs_on_cpu(tagger) else []
+
+
+class TagImage(_Tag):
+    """One image per Task, through one tagger of the catalogue (the `tagger` setting): the tags over their category's
+    threshold (the `thresholds` setting, merged over the tagger's defaults), highest first, at most `maxTags`; and the
+    tagger's rating. Its path must be in the Task's reach (Allowed roots), else the Task fails saying why.
+
+    The Tasks of a process run at once on the shim's event loop, as `ClassifyImage`'s do, and share the tagger's
+    forward passes, `tagBatchSize` images at most to one: thresholds and `maxTags` act on the output, so Tasks with
+    different settings share them too."""
+
+    def __init__(self, config, pool=None):
+        super().__init__(config, pool)
+        self._passes = _Passes(self.models, self.batch_size, _tasks_at_once(config, TAG_TASKS_AT_ONCE))
+
+    async def run(self, task, ctx):
+        path = self._path(task)
+        tagger = self._tagger(task)
+        thresholds, max_tags = self._settings(task, tagger)
+        input = await self._passes.blocking(self._read, path, tagger, ctx)
+        # The tag list and the session, downloading either if need be: blocking, so on a thread. A Cancel ends this
+        # await at once, as `ClassifyImage`'s.
+        labels = await self._passes.blocking(self._ready, tagger, ctx)
+        # From the Task's own coroutine: the first forward pass may be slow (cuDNN searches for its algorithms then).
+        ctx.progress(0.0, "Tagging")
+        row = await self._passes.row(tagger, input)
+
+        result = {"path": path, **tag(tagger, labels, row, thresholds, max_tags)}
+        if warnings := self._warnings(tagger):
+            result["warnings"] = warnings
+        return result
+
+    @staticmethod
+    def _read(path: str, tagger: Tagger, ctx) -> np.ndarray:
+        """The image as the tagger takes it, read where its path really leads once the Task's reach allows it."""
+        return to_input(to_rgb(open_image(ctx.allowed_path(path, "read"))), tagger.preprocessing)
+
     def teardown(self):
         self._passes.close()
         super().teardown()
+
+
+class TagFrames(_Tag):
+    """A whole video from its frame sheet, or a folder of frames, or one image as one frame, read as `ClassifyFrames`
+    reads them: each frame through the tagger, `tagBatchSize` at a time, and each frame's own tags and rating
+    (`frames`), as `TagImage` gives them for an image, in the sheet's or folder's order. Its path must be in the Task's
+    reach (Allowed roots), else the Task fails saying why; a folder's image outside it is skipped with a warning.
+
+    A Worker and pool of its own, as `ClassifyFrames` has: fyflow gives each Node Type its own pool, so it could not
+    share `TagImage`'s process. Both pools hold the `gpu` unit while they live, so they take turns on a GPU and never
+    hold two copies of a tagger on it at once."""
+
+    what = "the frames"
+
+    def run(self, task, ctx):
+        path = self._path(task)
+        tagger = self._tagger(task)
+        thresholds, max_tags = self._settings(task, tagger)
+        source = read_frames(path, ctx.allowed_path)
+        # The tag list and the session first, so that loading the model is said as such, then what the first batch
+        # does.
+        labels = self._ready(tagger, ctx)
+
+        def score(images: list[Image.Image]) -> np.ndarray:
+            inputs = np.stack([to_input(image, tagger.preprocessing) for image in images])
+            return self.models.scores(tagger, inputs, ctx)
+
+        rows = _frame_by_frame(source, self.batch_size, score, ("Tagging", "Tagged"), ctx)
+        frames = []
+        for frame, row in zip(source.frames, rows, strict=True):
+            own = tag(tagger, labels, row, thresholds, max_tags)
+            frames.append({"timestamp": frame.timestamp, "tags": own["tags"], "rating": own["rating"]})
+        return _frames_result(path, source, {"tagger": tagger.id, "frames": frames}, self._warnings(tagger))
