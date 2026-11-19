@@ -1,19 +1,19 @@
 # 20: Release with frame lists and answers in a file
 
-**What to build:** the release that ships tickets 18 and 19. It follows the usual release flow: version bump, `uv lock`,
+**What to build:** the release that ships tickets 18 and 19, and TagScenes (21–24). It follows the usual release flow: version bump, `uv lock`,
 `pnpm check`, tag, then the index PR after the Release workflow.
 
-**Blocked by:** 18, 19
+**Blocked by:** 18, 19, 21, 22, 23, 24
 
-**Status:** ready-for-human (bumped and checked; tag, push and index PR wait for the user)
+**Status:** blocked (waits for TagScenes; then `pnpm check` again, and tag, push and index PR wait for the user)
 
 - [x] Version 0.4.0 in `package.json`, `plugin.ts` and `python/pyproject.toml`, then `uv lock`. It is a minor version
   because the frames output schemas no longer require `frames` (or `path`).
 - [x] `pnpm check` passes, with 377 pytest (slow included) and 78 vitest.
 - [ ] Push `main` and the tag `fyflow-ext.image-tags@0.4.0`. The Release workflow then builds
   `fyflow-plugin-image-tags-0.4.0.tgz`.
-- [ ] Open the index PR to fyflow-plugins once the asset exists, with the user's approval. The SDK range and Node Types
-  are unchanged from 0.3.0.
+- [ ] Open the index PR to fyflow-plugins once the asset exists, with the user's approval. The SDK range is unchanged from 0.3.0;
+  the Node Types gain `TagScenes`.
 
 ## What is new in 0.4.0
 
