@@ -108,7 +108,7 @@ doesn't change ClassifyFrames' or TagFrames' output.
 | `maxTags` | 40 | the most entries in any one list: a scene's tags, a scene's highlights, the summary's tags, and, with `includeFrames`, a frame's tags |
 | `embeddingWeight` | 0.6 | how much the image embedding counts against the tags when comparing frames (§5.3). 0 = tags only, 1 = image only |
 | `minSceneDuration` | 15 | seconds. Shorter scenes merge into their more similar neighbour |
-| `ignoreTags` | [] | more tags to leave out of similarity and highlights, beside the built-in shot-specific list |
+| `ignoreTags` | [] | tags to leave out everywhere: grouping, scene and summary tags, highlights. The built-in shot-specific list is left out of grouping and highlights only |
 | `minCoverage` | 0.3 | a scene lists a tag when it is on for this share of the scene's time |
 | `includeTags` | true | hand on each scene's tags and highlights. With false, a scene has only times, frames, rating and keyframe |
 | `includeFrames` | false | also hand on each frame's own tags and rating (§3.4). When off, no per-frame tags appear anywhere: not in the result, not in the file |
@@ -321,8 +321,8 @@ or rating.
 - **Tags:**
   - `coverage` is the share of the scene's time during which the tag is on.
   - `score` is the mean score while it is on.
-  - List the tags with `coverage ≥ minCoverage`, general and character only, ordered by coverage then score, at most
-    `maxTags`.
+  - List the tags with `coverage ≥ minCoverage`, general and character only, not in `ignoreTags`, ordered by coverage
+    then score, at most `maxTags`. Shot-specific tags are listed: they describe the scene truly, and only harm grouping.
 - **Highlights** come from raw, unsmoothed scores:
   - A general tag qualifies when it reaches `PEAK_STRONG` (0.7) in one frame, or `PEAK_REPEAT` (0.5) in two frames.
   - A character qualifies when it reaches the character threshold in two frames, since single-frame misfires are
