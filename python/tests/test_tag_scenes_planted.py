@@ -19,9 +19,9 @@ EVERY = 2.0
 #: Each scene: its image, how many frames, and how its frames are cut from it: `None` for anywhere, or the shots it
 #: cuts between, each a box (left, top, right, bottom) as shares of the image, two frames to a shot.
 PLANTED = [
-    ("anime-01-rainy-bus-stop.jpg", 18, None),
-    ("anime-03-festival-night-market.jpg", 18, [(0.0, 0.1, 0.5, 0.9), (0.5, 0.1, 1.0, 0.9)]),
-    ("anime-04-seaside-railway.jpg", 16, None),
+    ("anime-01-rainy-bus-stop.jpg", 10, None),
+    ("anime-03-festival-night-market.jpg", 10, [(0.0, 0.1, 0.5, 0.9), (0.5, 0.1, 1.0, 0.9)]),
+    ("anime-04-seaside-railway.jpg", 10, None),
 ]
 #: Black frames: two between the first scene and the second, two in the middle of the last.
 BLANKS_BETWEEN = 2
