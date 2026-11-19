@@ -781,7 +781,7 @@ const tagFramesOutputSchema = {
 
 export default definePlugin({
   id: "fyflow-ext.image-tags",
-  version: "0.3.0",
+  version: "0.4.0",
   base: import.meta.url,
   // The Host makes the Plugin's Python environment from `python/uv.lock` with uv, at start and at each Reload, with
   // the extras of the variant `pickVariant` picks for this machine (`pick-build.ts`), and of each variant a Profile
