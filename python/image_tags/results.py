@@ -1,11 +1,11 @@
 """Where a frames Task's per-frame answers go: in its result (`lists: "result"`, the default), or in a JSON file
 (`lists: "file"`), so a large one does not sit in the Flow, as VideoThumbnail's `ExtractFrames` does with its lists.
 
-The file holds the whole result, `frames` included; the Task's result is then that without `frames`, plus `file`,
-`count` and `reused`. Where the file goes: the Node's `output` (a `.json` file, or a folder), else the Profile's
-`outputDir` (a per-Task field, which a Flow or Node may set), else the Plugin's own `results/` folder in its data
-directory. A path given (`output`, `outputDir`) must be inside an Allowed root with write access; the Plugin's own
-folder needs none.
+The file holds the whole result, `frames` included (and `scenes`, for `TagScenes`); the Task's result is then that
+without them, plus `file`, `count` and `reused`. Where the file goes: the Node's `output` (a `.json` file, or a
+folder), else the Profile's `outputDir` (a per-Task field, which a Flow or Node may set), else the Plugin's own
+`results/` folder in its data directory. A path given (`output`, `outputDir`) must be inside an Allowed root with
+write access; the Plugin's own folder needs none.
 
 In a folder the file is named `<name>.<key>.json`: the key covers the Node Type, the input, each frame file's path,
 size and last change, the settings and the models' commits. So a Task on unchanged frames with the same settings finds
@@ -94,14 +94,17 @@ def target(
     return os.path.join(folder, f"{_safe(name)}.{key}.json"), True
 
 
-def reused(path: str) -> dict | None:
-    """The result a file there holds, or None when there is none, or none that reads as one."""
+def reused(path: str, lists: tuple[str, ...] = ("frames",)) -> dict | None:
+    """The result a file there holds, or None when there is none, or none that reads as one: an object whose first
+    list field of `lists` is a list, and each other one a list where it is there."""
     try:
         with open(path, encoding="utf-8") as file:
             result = json.load(file)
     except (OSError, ValueError):
         return None
-    return result if isinstance(result, dict) and isinstance(result.get("frames"), list) else None
+    if not isinstance(result, dict) or not isinstance(result.get(lists[0]), list):
+        return None
+    return result if all(isinstance(result[key], list) for key in lists[1:] if key in result) else None
 
 
 def write(path: str, result: dict) -> None:
@@ -117,10 +120,11 @@ def write(path: str, result: dict) -> None:
             os.remove(part)
 
 
-def summary(result: dict, path: str, was_reused: bool) -> dict:
-    """What a Task hands on when its answers went to a file: the result without `frames`, and where they are."""
-    small = {key: value for key, value in result.items() if key != "frames"}
-    small.update({"file": path, "count": len(result["frames"]), "reused": was_reused})
+def summary(result: dict, path: str, was_reused: bool, count: int, lists: tuple[str, ...] = ("frames",)) -> dict:
+    """What a Task hands on when its answers went to a file: the result without its list fields (`lists`), where they
+    are, and `count`, which the caller says: its frames, or a `TagScenes` Task's scenes."""
+    small = {key: value for key, value in result.items() if key not in lists}
+    small.update({"file": path, "count": count, "reused": was_reused})
     return small
 
 

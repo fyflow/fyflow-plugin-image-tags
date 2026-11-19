@@ -218,12 +218,12 @@ function modelsData(dataDir: string): PluginData {
   // The catalogue's models first, in its order, then what earlier versions left.
   const order = [...pinned.keys()];
   const rank = (folder: string) => (order.includes(folder) ? order.indexOf(folder) : order.length);
-  // The frames' answers ClassifyFrames and TagFrames wrote with `lists: "file"` and no folder of their own.
+  // The answers ClassifyFrames, TagFrames and TagScenes wrote with `lists: "file"` and no folder of their own.
   const answers: PluginDataItem[] = existsSync(join(dataDir, RESULTS_FOLDER))
     ? [
         {
           path: RESULTS_FOLDER,
-          label: "Frames' answers written by ClassifyFrames and TagFrames",
+          label: "Frames' answers written by ClassifyFrames, TagFrames and TagScenes",
           lost: "A Task runs its models again; a Flow that reads a file from here can no longer",
         },
       ]
@@ -319,13 +319,14 @@ const profileSchema = {
       description:
         `The most images in one forward pass of a tagger; left empty, ${DEFAULT_TAG_BATCH_SIZE}. A tagger is over ` +
         "1 GB, and a batch needs GPU memory on top of it: lower it if a Task fails for want of GPU memory. TagImage " +
-        "batches the images of the Tasks running at once; TagFrames runs a Task's frames that many at a time. " +
+        "batches the images of the Tasks running at once; TagFrames and TagScenes run a Task's frames that many at a " +
+        "time. " +
         "Takes effect at the next Reload.",
     },
     outputDir: {
       type: "string",
       description:
-        "Where ClassifyFrames and TagFrames write the frames' answers when `lists` is file and the Node names no " +
+        "Where ClassifyFrames, TagFrames and TagScenes write their answers when `lists` is file and the Node names no " +
         "`output`: an absolute folder in an Allowed root with write access; left empty, the Plugin's own results " +
         "folder in its data directory. Read as each Task is dispatched, so a Flow or Node may set its own.",
     },
@@ -333,7 +334,7 @@ const profileSchema = {
   additionalProperties: false,
 };
 
-// What ClassifyFrames and TagFrames take beside their image Node Type's settings: where each frame's answer goes
+// What ClassifyFrames, TagFrames and TagScenes take beside their image Node Type's settings: where each frame's answer goes
 // (`results.py`).
 const fileSettingsProperties = {
   lists: {
@@ -720,6 +721,17 @@ const tagOutputSchema = {
   ],
 };
 
+// One frame of TagFrames' result, and of TagScenes' with includeFrames: its own tags and rating, as TagImage gives them.
+const TAGGED_FRAME = {
+  type: "object",
+  required: ["timestamp", "tags", "rating"],
+  properties: {
+    path: framePathProperty,
+    timestamp: framesOutputSchema.properties.frames.items.properties.timestamp,
+    ...tagProperties,
+  },
+};
+
 const tagFramesOutputSchema = {
   type: "object",
   required: ["tagger"],
@@ -733,15 +745,7 @@ const tagFramesOutputSchema = {
       description:
         "each frame's own tags and rating, in the sheet's, folder's or list's order, as TagImage gives them for an " +
         "image; in `file` instead with lists file",
-      items: {
-        type: "object",
-        required: ["timestamp", "tags", "rating"],
-        properties: {
-          path: framePathProperty,
-          timestamp: framesOutputSchema.properties.frames.items.properties.timestamp,
-          ...tagProperties,
-        },
-      },
+      items: TAGGED_FRAME,
     },
     warnings: {
       type: "array",
@@ -775,6 +779,349 @@ const tagFramesOutputSchema = {
           rating: RATING_EXAMPLE,
         },
       ],
+    },
+  ],
+};
+
+/** The most entries in any one list of a TagScenes result when a Node sets no `maxTags` (`SCENE_MAX_TAGS`). */
+export const SCENE_MAX_TAGS = 40;
+
+/** TagScenes' grouping settings when a Node sets none, as `scenes.Settings` has them (a test holds the two together). */
+export const SCENE_DEFAULTS = {
+  embeddingWeight: 0.6,
+  minSceneDuration: 15,
+  minCoverage: 0.3,
+  includeTags: true,
+  includeFrames: false,
+} as const;
+
+const tagScenesSettingsSchema = {
+  type: "object",
+  properties: {
+    tagger: tagSettingsSchema.properties.tagger,
+    thresholds: {
+      ...tagSettingsSchema.properties.thresholds,
+      description:
+        "By category, the score at which a tag counts as on in a frame, from 0 to 1, merged over the tagger's " +
+        'defaults: a category set here changes only that one, so { "character": 0.5 } keeps general at its ' +
+        "default. A tag stays on a little below it (0.10 for general, 0.15 for character). A character must reach " +
+        "it in two frames to be a highlight. With includeFrames, each frame's own tags are those over it. A " +
+        `category the tagger lacks fails the Task. Defaults: ${defaultsLine}`,
+    },
+    maxTags: {
+      type: "integer",
+      minimum: 1,
+      description:
+        "The most entries in any one list: a scene's tags, a scene's highlights, the summary's tags, and with " +
+        `includeFrames a frame's own tags; left empty, ${SCENE_MAX_TAGS}`,
+    },
+    embeddingWeight: {
+      type: "number",
+      minimum: 0,
+      maximum: 1,
+      description:
+        "How much the image's embedding counts against its tags when comparing two frames: 0, the tags only; 1, the " +
+        `image only; left empty, ${SCENE_DEFAULTS.embeddingWeight}`,
+    },
+    minSceneDuration: {
+      type: "number",
+      minimum: 0,
+      description:
+        "The shortest scene, in seconds: a shorter one merges into the neighbour it is more alike; left empty, " +
+        `${SCENE_DEFAULTS.minSceneDuration}`,
+    },
+    ignoreTags: {
+      type: "array",
+      items: { type: "string", minLength: 1 },
+      description:
+        "Tags to leave out everywhere: comparing frames, the scenes' and the summary's tags, highlights, and frames' " +
+        "own tags. Named as the tagger names them (underscores kept). Shot-specific tags (framing, camera angle, " +
+        "gaze, expression, head counts) are left out of comparing frames and highlights already",
+      examples: [["simple_background", "letterboxed"]],
+    },
+    minCoverage: {
+      type: "number",
+      minimum: 0,
+      maximum: 1,
+      description:
+        "The share of a scene's time a tag must be on in for the scene to list it, from 0 to 1 (the summary's, of " +
+        `the video's time); left empty, ${SCENE_DEFAULTS.minCoverage}`,
+    },
+    includeTags: {
+      type: "boolean",
+      description:
+        "Hand on each scene's tags and highlights, and the summary's tags; false leaves a scene only its times, " +
+        "frames, rating and keyframe. Left empty, true",
+    },
+    includeFrames: {
+      type: "boolean",
+      description:
+        "Also hand on each frame's own tags and rating, as TagFrames does, with whether it is blank and its scene. " +
+        "Left empty, false: no frame's own tags anywhere, in the result or a file",
+    },
+    ...fileSettingsProperties,
+  },
+  additionalProperties: false,
+};
+
+// Where a scene's highlight or rating peaks, and its keyframe: a frame of the input, as the result points at it.
+const pointedFrameProperties = {
+  frame: {
+    type: "integer",
+    minimum: 0,
+    description: "the frame's place in the input: the folder's order by name, or the sheet's or list's order",
+  },
+  timestamp: { type: "number", description: "where in the video the frame is, in seconds" },
+  path: { type: "string", description: "the frame's own image; none for a frame sheet's frame" },
+};
+
+const sceneTagsProperty = {
+  type: "array",
+  description:
+    "the tags on for at least minCoverage of the time, general and character only, by coverage then score, at most " +
+    "maxTags; none with includeTags false",
+  items: {
+    type: "object",
+    required: ["name", "category", "coverage", "score"],
+    properties: {
+      name: { type: "string", description: "the tag, as the tagger's tag list has it" },
+      category: { type: "string", description: "general or character" },
+      coverage: { type: "number", description: "the share of the time the tag is on, from 0 to 1" },
+      score: { type: "number", description: "its mean score while on, from 0 to 1" },
+    },
+  },
+};
+
+const SCENE = {
+  type: "object",
+  required: ["index", "start", "end", "duration", "frames", "keyframe"],
+  properties: {
+    index: { type: "integer", minimum: 0, description: "the scene's place, from 0, in time order" },
+    start: { type: "number", description: "where the scene starts, in seconds: halfway between two frames" },
+    end: { type: "number", description: "where it ends, in seconds" },
+    duration: { type: "number", description: "its length, in seconds" },
+    frames: {
+      type: "array",
+      items: { type: "integer", minimum: 0 },
+      description: "its frames' places in the input, in time order",
+    },
+    boundary: {
+      type: "object",
+      required: ["link"],
+      description: "the cut before the scene; none for the first",
+      properties: {
+        link: {
+          type: ["number", "null"],
+          description:
+            "the strongest similarity of two frames across the cut, in the units of `threshold`; null when no two " +
+            "were compared",
+        },
+      },
+    },
+    keyframe: {
+      type: "object",
+      required: ["frame", "timestamp"],
+      description: "the frame most like the scene as a whole",
+      properties: pointedFrameProperties,
+    },
+    rating: {
+      type: "object",
+      required: ["label", "scores", "peaks"],
+      description: "the scene's rating; none for a tagger that rates nothing",
+      properties: {
+        label: {
+          type: "string",
+          description:
+            "the most severe rating reaching 0.5 in two frames or 0.9 in one, else the highest mean score",
+        },
+        scores: { type: "object", description: "every rating's mean score over the scene, by rating" },
+        peaks: {
+          type: "array",
+          description:
+            "each rating more severe than `label` that reaches 0.5 in a frame, at the frame where it peaks",
+          items: {
+            type: "object",
+            required: ["label", "score", "frame", "timestamp"],
+            properties: {
+              label: { type: "string", description: "the rating" },
+              score: { type: "number", description: "its peak score" },
+              ...pointedFrameProperties,
+            },
+          },
+        },
+      },
+    },
+    tags: sceneTagsProperty,
+    highlights: {
+      type: "array",
+      description:
+        "short-lived tags not among `tags`: a general tag reaching 0.7 in one frame or 0.5 in two, a character over " +
+        "its threshold in two; by score, at most maxTags. None with includeTags false",
+      items: {
+        type: "object",
+        required: ["name", "category", "score", "frames", "frame", "timestamp"],
+        properties: {
+          name: { type: "string", description: "the tag, as the tagger's tag list has it" },
+          category: { type: "string", description: "general or character" },
+          score: { type: "number", description: "its peak score" },
+          frames: { type: "integer", minimum: 0, description: "how many frames reach 0.5 on it" },
+          ...pointedFrameProperties,
+        },
+      },
+    },
+  },
+};
+
+const tagScenesOutputSchema = {
+  type: "object",
+  required: ["tagger", "frameCount", "duration", "threshold", "summary", "count"],
+  properties: {
+    path: framesOutputSchema.properties.path,
+    video: framesOutputSchema.properties.video,
+    tagger: { type: "string", description: "the tagger that ran" },
+    frameCount: { type: "integer", minimum: 1, description: "how many frames were tagged" },
+    duration: {
+      type: "number",
+      description:
+        "the video's length in seconds, as its thumbnails give it; else where the last frame's span ends (half a " +
+        "frame's gap after it)",
+    },
+    threshold: {
+      type: ["number", "null"],
+      description:
+        "the similarity two frames needed to be linked, in standard deviations over the video's compared pairs; " +
+        "null when no two frames were compared",
+    },
+    summary: {
+      type: "object",
+      description: "the whole video's tags and rating",
+      properties: {
+        tags: {
+          ...sceneTagsProperty,
+          description:
+            "each tag's coverage of the whole video (scene by scene, weighted by their time) and mean score while " +
+            "on, at least minCoverage, at most maxTags; none with includeTags false",
+        },
+        rating: {
+          type: "object",
+          required: ["label", "scores"],
+          description: "the video's rating; none for a tagger that rates nothing",
+          properties: {
+            label: { type: "string", description: "the most severe label of any scene" },
+            scores: { type: "object", description: "every rating's mean score over the video, by rating" },
+          },
+        },
+      },
+    },
+    count: { type: "integer", minimum: 1, description: "how many scenes, with lists result or file" },
+    scenes: {
+      type: "array",
+      description: "the scenes, in time order; in `file` instead with lists file",
+      items: SCENE,
+    },
+    frames: {
+      type: "array",
+      description:
+        "with includeFrames: each frame's own tags and rating, as TagFrames gives them, in the input's order, with " +
+        "whether it is blank and its scene; in `file` instead with lists file",
+      items: {
+        ...TAGGED_FRAME,
+        required: [...TAGGED_FRAME.required, "blank", "scene"],
+        properties: {
+          ...TAGGED_FRAME.properties,
+          blank: {
+            type: "boolean",
+            description:
+              "whether the frame is blank (black, white or a solid card): it counts for time, not for tags",
+          },
+          scene: { type: "integer", minimum: 0, description: "its scene's `index`" },
+        },
+      },
+    },
+    file: {
+      type: "string",
+      description: "with lists file: the JSON file holding the whole result, `scenes` and `frames` included",
+    },
+    reused: fileResultProperties.reused,
+    warnings: tagFramesOutputSchema.properties.warnings,
+  },
+  examples: [
+    {
+      path: "D:/Scenes/episode-01.1c8fcf3f1311",
+      video: "D:/Videos/episode-01.mkv",
+      tagger: "wd-eva02-large",
+      frameCount: 278,
+      duration: 1510.26,
+      threshold: 1.12,
+      summary: {
+        tags: [
+          { name: "1girl", category: "general", coverage: 0.81, score: 0.93 },
+          { name: "hatsune_miku", category: "character", coverage: 0.64, score: 0.9 },
+          { name: "outdoors", category: "general", coverage: 0.42, score: 0.71 },
+        ],
+        rating: RATING_EXAMPLE,
+      },
+      count: 31,
+      scenes: [
+        {
+          index: 0,
+          start: 0,
+          end: 74.3,
+          duration: 74.3,
+          frames: [0, 1, 2],
+          keyframe: { frame: 1, timestamp: 12.4, path: "D:/Scenes/episode-01.1c8fcf3f1311/frame_0005.jpg" },
+          rating: {
+            ...RATING_EXAMPLE,
+            peaks: [
+              {
+                label: "sensitive",
+                score: 0.62,
+                frame: 2,
+                timestamp: 30.1,
+                path: "D:/Scenes/episode-01.1c8fcf3f1311/frame_0009.jpg",
+              },
+            ],
+          },
+          tags: [
+            { name: "1girl", category: "general", coverage: 0.92, score: 0.95 },
+            { name: "night", category: "general", coverage: 0.88, score: 0.81 },
+          ],
+          highlights: [
+            {
+              name: "umbrella",
+              category: "general",
+              score: 0.83,
+              frames: 1,
+              frame: 2,
+              timestamp: 30.1,
+              path: "D:/Scenes/episode-01.1c8fcf3f1311/frame_0009.jpg",
+            },
+          ],
+        },
+        {
+          index: 1,
+          start: 74.3,
+          end: 120.9,
+          duration: 46.6,
+          frames: [3, 4, 5],
+          boundary: { link: 0.41 },
+          keyframe: { frame: 4, timestamp: 98.2, path: "D:/Scenes/episode-01.1c8fcf3f1311/frame_0012.jpg" },
+          rating: { ...RATING_EXAMPLE, peaks: [] },
+          tags: [{ name: "outdoors", category: "general", coverage: 1, score: 0.9 }],
+          highlights: [],
+        },
+      ],
+      warnings: [],
+    },
+    {
+      frameCount: 278,
+      tagger: "wd-eva02-large",
+      duration: 1510.26,
+      threshold: 1.12,
+      summary: { rating: RATING_EXAMPLE },
+      count: 31,
+      file: "D:/Tags/episode-01.0123456789abcdef.json",
+      reused: false,
     },
   ],
 };
@@ -829,6 +1176,12 @@ export default definePlugin({
       settingsSchema: tagFramesSettingsSchema,
       inputSchema: framesInputSchema,
       outputSchema: tagFramesOutputSchema,
+    },
+    tagScenes: {
+      python: "image_tags.worker:TagScenes",
+      settingsSchema: tagScenesSettingsSchema,
+      inputSchema: framesInputSchema,
+      outputSchema: tagScenesOutputSchema,
     },
   },
   nodeTypes: {
@@ -900,6 +1253,23 @@ export default definePlugin({
       icon: "image",
       description:
         "Tags each frame of a VideoThumbnail frame sheet, or a folder of frames (characters, general tags and a rating), with a local tagger.",
+    },
+    TagScenes: {
+      worker: "tagScenes",
+      profile: ["modelDir", "tagBatchSize", "outputDir"],
+      // A Worker and pool of its own, as TagFrames has, holding the same resident units: its tagger's embedding
+      // session never shares a process with a plain one, and the GPU never holds two copies of the tagger. Two Tasks
+      // at once, as TagFrames, each running its frames through the tagger `tagBatchSize` at a time.
+      pool: {
+        maxThreads: 1,
+        maxConcurrentTasks: 2,
+        idleTimeout: 5_000,
+        residentGroups: RESIDENT_GROUPS,
+        variants: POOL_VARIANTS,
+      },
+      icon: "tag",
+      description:
+        "Tags a video's frames and groups them into scenes: each scene's tags, highlights and rating, and the video's.",
     },
   },
 });

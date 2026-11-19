@@ -2,7 +2,8 @@
 
 A fyflow-app Plugin (`fyflow-ext.image-tags`) that tells what an image is with small local ONNX classifiers: anime,
 CG or live action, of one image or of a whole video from its frames; and tags an image, or each frame of a video,
-with a local tagger: characters, general tags and a rating (see `.scratch/image-tags/spec.md`).
+with a local tagger: characters, general tags and a rating; and groups a video's frames into scenes, each with its
+tags (see `.scratch/image-tags/spec.md` and `TagScenes-spec.md`).
 
 Needs a Host with `fyflow-plugin-sdk` 0.11.0 or later and Python Workers (uv); 0.12.0 or later adds the
 [Data](#data) link. Install it from **Browse** on the
@@ -154,15 +155,90 @@ frames") moves on, and a Cancel is looked at, after each batch. One process per 
 `ClassifyFrames`' does. It has a pool of its own, apart from `TagImage`'s (fyflow gives each Node Type one), holding
 the same `gpu` unit: so the two take turns on the GPU, and a GPU never holds two copies of the tagger.
 
+### `TagScenes`
+
+A whole video per Task, from its frames: it tags them, groups them into **scenes**, and hands on each scene's tags,
+short-lived highlights and rating, and the whole video's. It is for harvesting tags: a scene's boundary is never more
+than about half a sampling interval off, which matters little for that. Its input is `TagFrames`' (`path` or
+`frames`, read as [`ClassifyFrames`](#classifyframes) reads them), but **every frame needs a timestamp**: a frame
+without one fails the Task before any model loads, saying how many lack one. Grouping runs on time (which frames are
+compared, how long a scene is, how much of it a tag covers), so a guessed spacing would make up scene times. Frames
+with timestamps come from VideoThumbnail's thumbnails, frame sheets, `DetectScenes` and `ExtractFrames`, or a
+`frames` list with each frame's `timestamp`:
+
+```
+VideoFiles → DetectScenes (frames: every 2 s) → TagScenes (path = DetectScenes.folder) → …
+VideoFiles → ExtractFrames (every 2 s)        → TagScenes (path = ExtractFrames.folder) → …
+VideoFiles → VideoThumbnail (sheet)           → TagScenes (path = sheet) → …
+```
+
+**Sample about every 2 s, and give DetectScenes a `maxFrames` above the frame count**: frames past its cap are not
+written, and the scenes they would have shown are lost.
+
+Each frame goes through the tagger once, [`tagBatchSize`](#tagbatchsize) at a time, giving its scores and its
+**image embedding** (the tagger's pooled features, before its last layer) in one forward pass. Of each frame only its
+embedding, its scores of 0.05 or more, its rating and whether it is **blank** (black, white or a solid card: its
+grayscale standard deviation under 4 of 255) are kept, so 10000 frames take about 50 MB beside the model. Then:
+
+- Frames close in time (within 30 s and 15 frames) are compared by their embeddings and their tags (general and
+  character tags, those every frame has counting little; framing, camera angle, gaze, expression and head counts left
+  out, since they change with every cut inside a scene), and the most alike pairs are linked. A scene ends where no
+  link crosses, so dialogue cut A/B/A/B stays one scene while a new place or cast starts another.
+- A few blank or title frames inside a scene don't break it; blank frames at a cut end the scene before it, and a run
+  of them longer than `minSceneDuration` is a scene of its own. A scene shorter than `minSceneDuration` merges into
+  the neighbour it is more alike.
+- Each scene's tags are those on (smoothed over a few seconds within the scene, then over their category's threshold)
+  for at least `minCoverage` of its time.
+
+Settings:
+
+| Setting | Default | What it is |
+| --- | --- | --- |
+| `tagger` | `wd-eva02-large` | as `TagImage` |
+| `thresholds` | the tagger's | as `TagImage`: when a tag counts as on in a frame, merged over the tagger's defaults. A tag on stays on down to 0.10 below it (general) or 0.15 (character). A character must reach it in two frames to be a highlight |
+| `maxTags` | 40 | the most entries in any one list: a scene's tags, its highlights, the summary's tags, and with `includeFrames` a frame's own tags |
+| `embeddingWeight` | 0.6 | how much the image embedding counts against the tags when comparing frames: 0, tags only; 1, the image only |
+| `minSceneDuration` | 15 | seconds: a shorter scene merges into its more alike neighbour |
+| `ignoreTags` | none | tags to leave out everywhere: comparing frames, scenes' and the summary's tags, highlights, frames' own tags |
+| `minCoverage` | 0.3 | a scene lists a tag when it is on for this share of the scene's time |
+| `includeTags` | `true` | hand on each scene's tags and highlights, and the summary's tags; `false` leaves a scene its times, frames, rating and keyframe |
+| `includeFrames` | `false` | also hand on each frame's own tags and rating. Off, no frame's own tags appear anywhere, in the result or a file |
+| `lists`, `output`, `overwrite` | `result` | as [Answers in a file](#answers-in-a-file): `scenes` and `frames` go to the file |
+
+It hands on `{ path?, video?, tagger, frameCount, duration, threshold, summary, count, scenes, frames?, warnings? }`:
+
+- `scenes`: in time order, each `{ index, start, end, duration, frames, boundary?, keyframe, rating, tags,
+  highlights }`. `frames` are the scene's frames as places in the input (the folder's order by name, or the sheet's
+  or list's), as is every `frame` below. `boundary.link` is the strongest similarity across the cut before it (none
+  on the first scene; null when no two frames across it were compared). `keyframe` is `{ frame, timestamp, path? }`,
+  the frame most like the scene as a whole (`path` is its image, none for a sheet's frame).
+- A scene's `tags` are `[{ name, category, coverage, score }]`, by coverage then score: `coverage` the share of the
+  scene's time the tag is on, `score` its mean while on. Its `highlights` are short-lived tags not among them, each
+  `{ name, category, score, frames, frame, timestamp, path? }` at the frame where it peaks: a general tag reaching 0.7
+  in one frame or 0.5 in two, a character over its threshold in two (`frames` counts those reaching 0.5).
+- A scene's `rating` is `{ label, scores, peaks }`: `label` the most severe rating reaching 0.5 in two frames or 0.9
+  in one, else the highest mean; `scores` the means; `peaks` each more severe rating reaching 0.5 in a frame, at its
+  peak frame.
+- `summary`: the video's `tags` (each tag's coverage of the whole video, scene by scene) and `rating` (`label` the most
+  severe scene's, `scores` the means over the video).
+- `count`: how many scenes; `frameCount`: how many frames; `duration`: the video's, from its thumbnails, else where
+  the last frame's span ends; `threshold`: the link threshold, in standard deviations over the video's compared pairs.
+- `frames` (with `includeFrames` only): each frame's `{ path?, timestamp, tags, rating }` as `TagFrames` gives it, with
+  `blank` and `scene` (its scene's `index`).
+
+The Task's progress runs from 0 to 0.9 as it tags ("Tagged 8 of 16 frames"), then "Grouping" and "Pooling" to 1; a
+Cancel is looked at after each batch and between the two. It has a Worker and pool of its own, as `TagFrames`, two
+Tasks at once, holding the same `gpu` unit.
+
 ### Answers in a file
 
 A Task over thousands of frames has a large answer: 10000 frames tagged can be tens of MB, more than a Task may hand
-on (16 MiB), and too much to keep in a Flow. `ClassifyFrames` and `TagFrames` can write it to a file instead, as
-VideoThumbnail's `ExtractFrames` does with its lists. Three Node settings:
+on (16 MiB), and too much to keep in a Flow. `ClassifyFrames`, `TagFrames` and `TagScenes` can write it to a file
+instead, as VideoThumbnail's `ExtractFrames` does with its lists. Three Node settings:
 
 | Setting | What it is |
 | --- | --- |
-| `lists` | `result` (the default): `frames` is in the Task's result. `file`: the whole result, `frames` included, is written to a JSON file, and the Task hands on the rest, with `file` (its path), `count` (its frames) and `reused`. |
+| `lists` | `result` (the default): `frames` is in the Task's result. `file`: the whole result, `frames` included, is written to a JSON file, and the Task hands on the rest, with `file` (its path), `count` (its frames) and `reused`. For `TagScenes`, `scenes` and `frames` go to the file, and `count` is its scenes, as with `result`. |
 | `output` | With `file`: a `.json` file to write, or a folder to name one in. An absolute path in an Allowed root with `write` access. |
 | `overwrite` | With `file`: run the models again even when a file made before is there. |
 
@@ -204,7 +280,7 @@ Every Node Type holds what it uses per process, not per Task: while its process 
 Task), each pool holds a unit of the Host's `gpu` group and 4 of its `cpu` group (every one, on a machine with fewer than 4
 logical processors), and a Task holds nothing of its own. Tasks waiting on a shared forward pass use no processor, and
 a forward pass runs on as many threads as the `cpu` units held. On the `cpu` build a pool holds the same `cpu` units
-and no `gpu` unit. With one GPU unit, the Node Types' GPU pools (`TagImage` and `TagFrames` have pools of their own too), and each
+and no `gpu` unit. With one GPU unit, the Node Types' GPU pools (`TagImage`, `TagFrames` and `TagScenes` have pools of their own too), and each
 Profile's, take turns: a pool waits for the other to idle out, up to about 10 s (its 5 s idle time and the Host's 5 s more).
 That suits the intended use, many Tasks of one Node Type and then many of the other, rather than Tasks alternating
 between them. A Profile can change the idle time (`idleTimeout`) for each Node Type.
@@ -248,7 +324,7 @@ On `directml`:
   order, not by speed: unit 1 may be an integrated GPU, or the same GPU as unit 0. Keep the `gpu` group at 1 unit
   on a `directml` Host.
 
-With one `gpu` unit, `ClassifyImage`, `ClassifyFrames`, `TagImage` and `TagFrames` take turns on the GPU, as above; on the `cpu` build they
+With one `gpu` unit, `ClassifyImage`, `ClassifyFrames`, `TagImage`, `TagFrames` and `TagScenes` take turns on the GPU, as above; on the `cpu` build they
 hold no `gpu` unit, so they run beside each other and beside GPU pools. Set [`batchSize`](#batchsize) for the GPU's
 memory.
 
@@ -262,7 +338,7 @@ batch holds one image per Task running.
 ### `tagBatchSize`
 
 A Profile start-up field, apart from `batchSize`: the most images in one forward pass of a tagger, 4 if left empty:
-the images of `TagImage`'s Tasks running at once, or the frames of one `TagFrames` Task.
+the images of `TagImage`'s Tasks running at once, or the frames of one `TagFrames` or `TagScenes` Task.
 A tagger is over 1 GB and each image of a batch needs GPU memory on top of it. A tagger that does not fit in the GPU's
 memory fails the Task with `<tagger> needs more GPU memory than this GPU has:`, then what to do: a smaller tagger,
 a smaller `tagBatchSize`, or the `cpu` build. It never falls back to the CPU by itself. PixAI takes a 1008×1008

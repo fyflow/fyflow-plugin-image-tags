@@ -1,5 +1,5 @@
-"""The frames a `ClassifyFrames` or `TagFrames` Task reads: those of a frame sheet, the images of a folder, a list of
-images, or one image.
+"""The frames a `ClassifyFrames`, `TagFrames` or `TagScenes` Task reads: those of a frame sheet, the images of a
+folder, a list of images, or one image.
 
 A **frame sheet** is a JPEG made by the video-thumbnail Plugin's `thumbs-collage` service: a collage of a video's
 frames, whose comment (COM) segment holds the service's JSON. Of that JSON this reads `frames` (per cell, null or
@@ -8,8 +8,9 @@ path, when the service was not told to leave it out) and `config.render_timestam
 each frame). Any other JPEG, or image, is not a sheet.
 
 A **thumbnail** is a JPEG of one frame made by the same Plugin, whose comment holds a JSON object with the frame's
-`timestamp` (seconds into the video) and, when the service was not told to leave it out, `video`. A thumbnail read as a
-plain image (alone, in a folder or in a list) gives its frame that timestamp and video.
+`timestamp` (seconds into the video), the video's `duration` and, when the service was not told to leave it out,
+`video`. A thumbnail read as a plain image (alone, in a folder or in a list) gives its frame that timestamp, video and
+duration.
 
 Nothing is read until the Task's reach allows it (`allowed_path`, the Host's check of its Allowed roots): the path
 given, each image of a folder, since a link inside an allowed folder may lead out of it, and each image of a list. The
@@ -23,7 +24,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+from PIL import Image, ImageStat, UnidentifiedImageError
 
 from .preprocess import open_image, to_rgb
 
@@ -32,6 +33,11 @@ from .preprocess import open_image, to_rgb
 MAX_FOLDER_IMAGES = 10_000
 #: More frames than this in a `frames` list fail the Task, as a folder's images do.
 MAX_LISTED_FRAMES = MAX_FOLDER_IMAGES
+
+#: A frame whose grayscale standard deviation (out of 255) is below this is blank: black, white or a solid card.
+BLANK_STD = 4
+#: The side of the thumbnail a frame is measured on for `is_blank`, in pixels.
+_BLANK_SIDE = 64
 
 TIMESTAMPS_DRAWN = (
     "The frame sheet has timestamps drawn on its frames, and the models see them: make it with timestamps off "
@@ -50,13 +56,14 @@ SHEET_TAGGED_AS_ONE_IMAGE = (
 @dataclass
 class Frame:
     """One frame to classify or tag: `load()` gives it in RGB, read when its batch comes. `timestamp` is where in the
-    video it is, in seconds, when known; `path` is its own image, for a folder's or a list's frame; `video` is the
-    video a thumbnail says it was taken from."""
+    video it is, in seconds, when known; `path` is its own image, for a folder's or a list's frame; `video` and
+    `duration` (seconds) are the video's, as a thumbnail says."""
 
     load: Callable[[], Image.Image]
     timestamp: float | None = None
     path: str | None = None
     video: str | None = None
+    duration: float | None = None
 
 
 @dataclass
@@ -68,6 +75,8 @@ class Frames:
     warnings: list[str] = field(default_factory=list)
     #: The files read, where they really are: what a result file's key covers.
     files: list[str] = field(default_factory=list)
+    #: The video's duration in seconds, when the frames' thumbnails give one and agree on it; a sheet gives none.
+    duration: float | None = None
 
 
 def _comment_json(image: Image.Image):
@@ -91,14 +100,29 @@ def sheet_of(image: Image.Image) -> dict | None:
 def thumbnail_of(image: Image.Image) -> tuple[float | None, str | None]:
     """The timestamp and video a thumbnail's comment gives, each None when it gives none: `(None, None)` for any image
     that is not a thumbnail, a frame sheet included."""
+    timestamp, video, _ = _thumbnail(image)
+    return timestamp, video
+
+
+def _thumbnail(image: Image.Image) -> tuple[float | None, str | None, float | None]:
+    """The timestamp, video and video's duration a thumbnail's comment gives, each None when it gives none."""
     meta = _comment_json(image)
     if not isinstance(meta, dict) or isinstance(meta.get("frames"), list):
-        return None, None
-    timestamp, video = meta.get("timestamp"), meta.get("video")
+        return None, None, None
+    timestamp, video, duration = meta.get("timestamp"), meta.get("video"), meta.get("duration")
     return (
         float(timestamp) if _is_seconds(timestamp) else None,
         video if isinstance(video, str) and video else None,
+        float(duration) if _is_seconds(duration) and duration > 0 else None,
     )
+
+
+def is_blank(image: Image.Image) -> bool:
+    """Whether a frame is blank (black, white or a solid card): its grayscale standard deviation, measured on a
+    thumbnail `_BLANK_SIDE` pixels across, is below `BLANK_STD`. `TagScenes` asks as each frame's batch loads."""
+    small = image.copy()
+    small.thumbnail((_BLANK_SIDE, _BLANK_SIDE))
+    return ImageStat.Stat(small.convert("L")).stddev[0] < BLANK_STD
 
 
 #: The Host's check of a path against the Task's reach, `ctx.allowed_path(path, access)`: where the path really leads,
@@ -116,8 +140,9 @@ def read_frames(path: str, allowed_path: AllowedPath) -> Frames:
     sheet = sheet_of(image)
     rgb = to_rgb(image)
     if sheet is None:
-        timestamp, video = thumbnail_of(image)
-        return Frames([Frame(lambda: rgb, timestamp, video=video)], video, files=[real])
+        timestamp, video, duration = _thumbnail(image)
+        frame = Frame(lambda: rgb, timestamp, video=video, duration=duration)
+        return Frames([frame], video, files=[real], duration=duration)
     source = _sheet(path, rgb, sheet)
     source.files = [real]
     return source
@@ -150,7 +175,7 @@ def read_frame_list(items, allowed_path: AllowedPath) -> Frames:
         meta = _image_meta(file)
         if meta is None:
             raise ValueError(f"Frame {index} is not an image: {path}")
-        own, video = meta
+        own, video, duration = meta
         files.append(str(file))
         frames.append(
             Frame(
@@ -158,9 +183,10 @@ def read_frame_list(items, allowed_path: AllowedPath) -> Frames:
                 float(timestamp) if timestamp is not None else own,
                 path,
                 video,
+                duration,
             )
         )
-    return Frames(frames, _one_video(frames), files=files)
+    return Frames(frames, _one_video(frames), files=files, duration=_one_duration(frames))
 
 
 def _sheet(path: str, image: Image.Image, sheet: dict) -> Frames:
@@ -217,7 +243,7 @@ def _folder(given: str, path: str, allowed_path: AllowedPath) -> Frames:
             continue
         load = lambda file=file: to_rgb(open_image(str(file)))  # noqa: E731
         files.append(str(file))
-        frames.append(Frame(load, meta[0], os.path.join(given, name), meta[1]))
+        frames.append(Frame(load, meta[0], os.path.join(given, name), meta[1], meta[2]))
         if len(frames) > MAX_FOLDER_IMAGES:
             raise ValueError(
                 f"The folder has more than {MAX_FOLDER_IMAGES} images: {path} (a large set belongs in a map over "
@@ -228,17 +254,17 @@ def _folder(given: str, path: str, allowed_path: AllowedPath) -> Frames:
             raise refused[0]
         raise ValueError(f"The folder has no images: {path}")
     warnings = [f"Skipped: {error}" for error in refused]
-    return Frames(frames, _one_video(frames), warnings, files)
+    return Frames(frames, _one_video(frames), warnings, files, _one_duration(frames))
 
 
-def _image_meta(file: Path) -> tuple[float | None, str | None] | None:
-    """`file`'s thumbnail timestamp and video (`thumbnail_of`), or None when it is not a file Pillow opens: its header
-    alone is read, which holds a JPEG's comment."""
+def _image_meta(file: Path) -> tuple[float | None, str | None, float | None] | None:
+    """`file`'s thumbnail timestamp, video and duration, or None when it is not a file Pillow opens: its header alone
+    is read, which holds a JPEG's comment."""
     if not file.is_file():
         return None
     try:
         with Image.open(file) as image:
-            return thumbnail_of(image)
+            return _thumbnail(image)
     except (UnidentifiedImageError, OSError):
         return None
 
@@ -247,6 +273,12 @@ def _one_video(frames: list[Frame]) -> str | None:
     """The video the frames' thumbnails name, when they name one and only one."""
     videos = {frame.video for frame in frames if frame.video is not None}
     return videos.pop() if len(videos) == 1 else None
+
+
+def _one_duration(frames: list[Frame]) -> float | None:
+    """The video's duration the frames' thumbnails give, when they give one and all that give one agree."""
+    durations = {frame.duration for frame in frames if frame.duration is not None}
+    return durations.pop() if len(durations) == 1 else None
 
 
 def _is_seconds(value) -> bool:

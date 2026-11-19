@@ -3,10 +3,13 @@
 import asyncio
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from typing import Any
 
 import numpy as np
 from PIL import Image
 
+from . import frames as framing
+from . import scenes
 from .batcher import Batcher
 from .catalogue import (
     CLASSIFIERS,
@@ -28,6 +31,7 @@ from .frames import (
     SHEET_TAGGED_AS_ONE_IMAGE,
     Frame,
     Frames,
+    is_blank,
     read_frame_list,
     read_frames,
     sheet_of,
@@ -84,21 +88,29 @@ def _tasks_at_once(config, default: int) -> int:
 def _frame_by_frame(
     source: Frames, batch_size: int, score: Callable[[list[Image.Image]], np.ndarray], verbs: tuple[str, str], ctx
 ) -> np.ndarray:
-    """`score`'s rows for every frame of `source`, in order, `batch_size` frames at a time, each batch's frames read
-    only when it comes. The Task says how far it has got before the first batch and after each (`verbs`: what it is
-    doing, then what it has done, as "Tagging" and "Tagged"), and a Cancel stops it before its next batch."""
+    """`score`'s rows for every frame of `source`, in order, `batch_size` frames at a time (`_batch_by_batch`)."""
+    return np.concatenate(_batch_by_batch(source, batch_size, score, verbs, ctx))
+
+
+def _batch_by_batch(
+    source: Frames, batch_size: int, run: Callable[[list[Image.Image]], Any], verbs: tuple[str, str], ctx, share=1.0
+) -> list:
+    """What `run` gives for each batch of `source`'s frames, in order, `batch_size` frames at a time, each batch's
+    frames read only when it comes. The Task says how far it has got before the first batch and after each (`verbs`:
+    what it is doing, then what it has done, as "Tagging" and "Tagged"), the batches taking its progress from 0 to
+    `share`, and a Cancel stops it before its next batch."""
     doing, did = verbs
     total = len(source.frames)
     ctx.progress(0.0, f"{doing} 0 of {total} frames")
-    rows = []
+    out = []
     for start in range(0, total, batch_size):
         if getattr(ctx, "cancelled", False):
             raise Cancelled(f"Cancelled after {start} of {total} frames")
         batch = source.frames[start : start + batch_size]
-        rows.append(score([frame.load() for frame in batch]))
+        out.append(run([frame.load() for frame in batch]))
         done = start + len(batch)
-        ctx.progress(done / total, f"{did} {done} of {total} frames")
-    return np.concatenate(rows)
+        ctx.progress(share * done / total, f"{did} {done} of {total} frames")
+    return out
 
 
 def _image_result(path: str, sheet: dict | None) -> dict:
@@ -184,10 +196,11 @@ class _Worker:
         settings: dict,
         models: list,
         make: Callable[[], dict],
+        lists: tuple[str, ...] = ("frames",),
     ) -> dict:
-        """A frames Task's result: `make()`'s, or with `lists: "file"`, its summary once the whole is in a file. A file
-        written before for the same frames, settings and models is handed on instead, no model run, unless
-        `overwrite` is set (`results.py`)."""
+        """A frames Task's result: `make()`'s, or with `lists: "file"`, its summary once the whole is in a file, without
+        its list fields (`lists`), and `count` the length of the first. A file written before for the same frames,
+        settings and models is handed on instead, no model run, unless `overwrite` is set (`results.py`)."""
         if options is None:
             return fits(make())
         input = {key: task.input.get(key) for key in ("path", "frames")}
@@ -195,12 +208,13 @@ class _Worker:
         output_dir = (task.settings.get("profile") or {}).get("outputDir")
         name = name_of(path, source.video, source.files)
         file, named = target(options, output_dir, self.data_dir, name, key, ctx.allowed_path)
-        if named and not options.overwrite and (found := reused(file)) is not None:
-            ctx.progress(1.0, f"Reused the answers of {len(found['frames'])} frames")
-            return summary(found, file, True)
+        if named and not options.overwrite and (found := reused(file, lists)) is not None:
+            count = len(found[lists[0]])
+            ctx.progress(1.0, f"Reused the answers of {count} {lists[0]}")
+            return summary(found, file, True, count, lists)
         result = make()
         write(file, result)
-        return summary(result, file, False)
+        return summary(result, file, False, len(result[lists[0]]), lists)
 
     def teardown(self):
         """The Worker ends (its process is about to): its models' sessions go. The shim may call it twice."""
@@ -400,9 +414,10 @@ class _Tag(_Worker):
         self.models.session(tagger, ctx)
         return labels
 
-    def _warnings(self, tagger: Tagger) -> list[str]:
-        """The result's warnings of running the tagger: that it ran on the CPU, when it did."""
-        return [ran_on_the_cpu(tagger)] if self.models.runs_on_cpu(tagger) else []
+    def _warnings(self, tagger: Tagger, embedding: bool = False) -> list[str]:
+        """The result's warnings of running the tagger (its embedding session, with `embedding`): that it ran on the
+        CPU, when it did."""
+        return [ran_on_the_cpu(tagger)] if self.models.runs_on_cpu(tagger, embedding=embedding) else []
 
 
 class TagImage(_Tag):
@@ -492,3 +507,241 @@ class TagFrames(_Tag):
             own = tag(tagger, labels, row, thresholds, max_tags)
             frames.append({**_named(frame), "tags": own["tags"], "rating": own["rating"]})
         return _frames_result(path, source, {"tagger": tagger.id, "frames": frames}, self._warnings(tagger))
+
+
+#: The most entries in any one list of a `TagScenes` result (a scene's tags or highlights, the summary's tags, a
+#: frame's tags) when a Node sets no `maxTags`.
+SCENE_MAX_TAGS = 40
+#: The share of a `TagScenes` Task's progress its tagging takes; grouping and pooling take the rest.
+TAGGING_SHARE = 0.9
+#: The constants of `scenes.py` a `TagScenes` result depends on, by name: a result file's key covers them, so a file
+#: made under other ones (a review may vary them) is not reused.
+SCENE_CONSTANTS = (
+    "SCORE_FLOOR",
+    "LINK_WINDOW",
+    "MAX_LINK_LAG",
+    "LINK_PERCENTILE",
+    "DF_SCORE",
+    "IDF_FLOOR",
+    "CHARACTER_WEIGHT",
+    "SMOOTHING",
+    "SMOOTHING_REACH",
+    "OFF_GAP",
+    "PEAK_STRONG",
+    "PEAK_REPEAT",
+    "RATING_STRONG",
+)
+
+
+def _fraction(settings: dict, name: str, default: float) -> float:
+    """A setting from 0 to 1, `default` when it is left empty."""
+    value = settings.get(name)
+    if value is None:
+        return default
+    if isinstance(value, bool) or not isinstance(value, int | float) or not 0 <= value <= 1:
+        raise ValueError(f"`{name}` is not a number from 0 to 1: {value!r}")
+    return float(value)
+
+
+def _switch(settings: dict, name: str, default: bool) -> bool:
+    """A true-or-false setting, `default` when it is left empty."""
+    value = settings.get(name)
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"`{name}` is not true or false: {value!r}")
+    return value
+
+
+def _timed(source: Frames) -> None:
+    """Fails unless every frame has a timestamp: grouping runs on time, and a guessed spacing would make scene times
+    up."""
+    missing = sum(frame.timestamp is None for frame in source.frames)
+    if missing:
+        has = "has" if missing == 1 else "have"
+        raise ValueError(
+            f"{missing} of {len(source.frames)} frames {has} no timestamp, and TagScenes groups frames by their time: "
+            "give it frames that carry one (a frame sheet or thumbnails from VideoThumbnail, the frames of "
+            "DetectScenes or ExtractFrames), or a `frames` list with each frame's `timestamp`"
+        )
+
+
+def _ratings(tagger: Tagger, labels: Labels) -> tuple[list[int], list[str]]:
+    """The places of the tagger's ratings in its output, and their names as a result gives them, from the least to the
+    most severe: the tag list's order (WD's `general`, `sensitive`, `questionable`, `explicit`), or `rating_names`'.
+    None for a tagger that rates nothing."""
+    if tagger.rating_code is None:
+        return [], []
+    at = [i for i, code in enumerate(labels.codes) if code == tagger.rating_code]
+    if not tagger.rating_names:
+        return at, [labels.names[i] for i in at]
+    by_name = {labels.names[i]: i for i in at}
+    if lacking := [theirs for theirs, _ in tagger.rating_names if theirs not in by_name]:
+        raise ValueError(
+            f"The tag list of {tagger.id} has no rating `{lacking[0]}`: its ratings are {', '.join(by_name)}"
+        )
+    return [by_name[theirs] for theirs, _ in tagger.rating_names], [ours for _, ours in tagger.rating_names]
+
+
+class TagScenes(_Tag):
+    """A whole video from its frames, read as `TagFrames` reads them, every one with a timestamp (else the Task fails
+    before any model loads): each frame through the tagger's embedding session (`Models.scores_and_embeddings`),
+    `tagBatchSize` at a time, then the frames grouped into scenes by their embeddings and tags, and each scene's tags,
+    highlights, rating and keyframe pooled, and the video's (`scenes.py`). Its result has no frame's own tags unless
+    `includeFrames` asks for them; with `lists: "file"`, its `scenes` and `frames` go to the file.
+
+    Of each frame only what grouping needs is kept while the others are tagged: its unit-length embedding, its scores
+    of `SCORE_FLOOR` or more, its ratings, its timestamp, and whether it is blank (`is_blank`, as its batch loads);
+    with `includeFrames`, its own tags and rating as `TagFrames` gives them too.
+
+    A Worker and pool of its own, as `TagFrames` has, holding the same `gpu` unit: so its embedding session never
+    shares a process with a plain session of the same tagger."""
+
+    what = "the frames"
+
+    def run(self, task, ctx):
+        tagger = self._tagger(task)
+        thresholds, max_tags = self._settings(task, tagger)
+        max_tags = max_tags or SCENE_MAX_TAGS
+        grouping = self._grouping(task.settings, max_tags)
+        include_frames = _switch(task.settings, "includeFrames", False)
+        options = file_options(task.settings)
+        path, source = self._frames(task, ctx)
+        _timed(source)
+        settings = {
+            "tagger": tagger.id,
+            "thresholds": thresholds,
+            "maxTags": max_tags,
+            "embeddingWeight": grouping.embedding_weight,
+            "minSceneDuration": grouping.min_scene_duration,
+            "ignoreTags": sorted(grouping.ignore_tags),
+            "minCoverage": grouping.min_coverage,
+            "includeTags": grouping.include_tags,
+            "includeFrames": include_frames,
+            "constants": {
+                **{name: getattr(scenes, name) for name in SCENE_CONSTANTS},
+                "SHOT_SPECIFIC_TAGS": sorted(scenes.SHOT_SPECIFIC_TAGS),
+                "BLANK_STD": framing.BLANK_STD,
+            },
+        }
+        return self._hand_on(
+            task,
+            ctx,
+            options,
+            path,
+            source,
+            settings,
+            [tagger],
+            lambda: self._scenes(tagger, thresholds, max_tags, grouping, include_frames, path, source, ctx),
+            lists=("scenes", "frames"),
+        )
+
+    @staticmethod
+    def _grouping(settings: dict, max_tags: int) -> scenes.Settings:
+        """The Task's settings that grouping and pooling read, checked before anything is read or downloaded."""
+        defaults = scenes.Settings()
+        min_duration = settings.get("minSceneDuration")
+        if min_duration is None:
+            min_duration = defaults.min_scene_duration
+        elif isinstance(min_duration, bool) or not isinstance(min_duration, int | float) or min_duration < 0:
+            raise ValueError(f"`minSceneDuration` is not a number of seconds, 0 or more: {min_duration!r}")
+        ignore = settings.get("ignoreTags") or []
+        if not isinstance(ignore, list) or not all(isinstance(name, str) and name for name in ignore):
+            raise ValueError(f"`ignoreTags` is not a list of tags: {ignore!r}")
+        return scenes.Settings(
+            embedding_weight=_fraction(settings, "embeddingWeight", defaults.embedding_weight),
+            min_scene_duration=float(min_duration),
+            ignore_tags=frozenset(ignore),
+            min_coverage=_fraction(settings, "minCoverage", defaults.min_coverage),
+            max_tags=max_tags,
+            include_tags=_switch(settings, "includeTags", defaults.include_tags),
+        )
+
+    def _scenes(
+        self,
+        tagger: Tagger,
+        thresholds: dict,
+        max_tags: int,
+        grouping: scenes.Settings,
+        include_frames: bool,
+        path: str | None,
+        source: Frames,
+        ctx,
+    ) -> dict:
+        # The tag list and the embedding session first, so that loading the model is said as such, then what the first
+        # batch does.
+        labels = self.models.labels(tagger, ctx)
+        self.models.session(tagger, ctx, embedding=True)
+        rating_rows, rating_labels = _ratings(tagger, labels)
+        category_of = {category.code: category.name for category in tagger.categories}
+
+        def run(images: list[Image.Image]):
+            blank = [is_blank(image) for image in images]
+            inputs = np.stack([to_input(image, tagger.preprocessing) for image in images])
+            output, embeddings = self.models.scores_and_embeddings(tagger, inputs, ctx)
+            ignore = grouping.ignore_tags
+            own = [_own(tagger, labels, row, thresholds, max_tags, ignore) for row in output] if include_frames else []
+            scores = output if tagger.sigmoided else 1 / (1 + np.exp(-output.astype(np.float64)))
+            ratings = scores[:, rating_rows].astype(np.float32)
+            scores[:, rating_rows] = 0  # kept whole in `ratings`, not among the tags
+            norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+            unit = (embeddings / np.maximum(norms, 1e-12)).astype(np.float32)
+            # Of the batch's scores, only those of `SCORE_FLOOR` or more are kept.
+            return scenes.Scores.from_dense(scores), unit, ratings, blank, own
+
+        batches = _batch_by_batch(source, self.batch_size, run, ("Tagging", "Tagged"), ctx, TAGGING_SHARE)
+        total = len(source.frames)
+        tagged = scenes.TaggedFrames(
+            timestamps=np.array([frame.timestamp for frame in source.frames], dtype=np.float64),
+            embeddings=np.concatenate([batch[1] for batch in batches]),
+            scores=scenes.Scores.stack([batch[0] for batch in batches]),
+            ratings=np.concatenate([batch[2] for batch in batches]),
+            blank=np.array([blank for batch in batches for blank in batch[3]], dtype=bool),
+            paths=[frame.path for frame in source.frames],
+            names=labels.names,
+            categories=[category_of.get(code) for code in labels.codes],
+            rating_labels=rating_labels,
+            thresholds=thresholds,
+            duration=source.duration,
+        )
+        own = [entry for batch in batches for entry in batch[4]]
+        del batches
+
+        _stop_if_cancelled(ctx, f"after tagging {total} frames")
+        ctx.progress(TAGGING_SHARE, "Grouping")
+        found = scenes.group(tagged, grouping)
+        _stop_if_cancelled(ctx, f"after grouping {total} frames")
+        ctx.progress(TAGGING_SHARE + (1 - TAGGING_SHARE) / 2, "Pooling")
+        pooled = scenes.pool(tagged, found, grouping)
+
+        # The video's duration where the thumbnails give it, else where the last frame's span ends.
+        fields = {"tagger": tagger.id, "frameCount": total, "duration": pooled["scenes"][-1]["end"], **pooled}
+        if include_frames:
+            fields["frames"] = [
+                {
+                    **_named(frame),
+                    "tags": mine["tags"],
+                    "rating": mine["rating"],
+                    "blank": bool(tagged.blank[i]),
+                    "scene": int(found.scene_of[i]),
+                }
+                for i, (frame, mine) in enumerate(zip(source.frames, own, strict=True))
+            ]
+        result = _frames_result(path, source, fields, self._warnings(tagger, embedding=True))
+        ctx.progress(1.0, f"Found {pooled['count']} scenes in {total} frames")
+        return result
+
+
+def _own(tagger: Tagger, labels: Labels, row: np.ndarray, thresholds: dict, max_tags: int, ignore: frozenset) -> dict:
+    """A frame's own tags and rating, as `TagFrames` gives them, without the tags `ignore` names (`ignoreTags`)."""
+    if not ignore:
+        return tag(tagger, labels, row, thresholds, max_tags)
+    own = tag(tagger, labels, row, thresholds)
+    own["tags"] = [entry for entry in own["tags"] if entry["name"] not in ignore][:max_tags]
+    return own
+
+
+def _stop_if_cancelled(ctx, when: str) -> None:
+    """A Cancel between a `TagScenes` Task's stages stops it there."""
+    if getattr(ctx, "cancelled", False):
+        raise Cancelled(f"Cancelled {when}")

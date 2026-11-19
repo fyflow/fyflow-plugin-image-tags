@@ -30,6 +30,8 @@ import plugin, {
   type ModelFile,
   RESIDENT_GROUPS,
   RESULTS_FOLDER,
+  SCENE_DEFAULTS,
+  SCENE_MAX_TAGS,
   TAGGERS,
 } from "../plugin.ts";
 
@@ -71,8 +73,9 @@ const registry = (): RegistryDocument => ({
 
 /** The Plugin's classifying Node Types: one image per Task, and a sheet or folder of frames per Task. */
 const NODE_TYPES = ["ClassifyImage", "ClassifyFrames"] as const;
-/** The Plugin's tagging Node Types: one image per Task, and a sheet or folder of frames per Task. */
-const TAG_NODE_TYPES = ["TagImage", "TagFrames"] as const;
+/** The Plugin's tagging Node Types: one image per Task, and a video's frames per Task (each frame's tags, or its
+ * scenes'). */
+const TAG_NODE_TYPES = ["TagImage", "TagFrames", "TagScenes"] as const;
 /** Every Node Type: the classifying ones and the tagging ones. */
 const ALL_NODE_TYPES = [...NODE_TYPES, ...TAG_NODE_TYPES] as const;
 
@@ -133,6 +136,8 @@ let workerConstants:
       defaultBatchSize: number;
       defaultTagBatchSize: number;
       resultsFolder: string;
+      sceneMaxTags: number;
+      sceneDefaults: Record<string, unknown>;
     }
   | undefined;
 const pythonWorker = () => {
@@ -146,10 +151,13 @@ const pythonWorker = () => {
         "cpu",
         "python",
         "-c",
-        "import json; from image_tags import results as r, worker as w; print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
+        "import json; from image_tags import results as r, scenes as s, worker as w; d = s.Settings(); " +
+          "print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
           "'tagTasksAtOnce': w.TAG_TASKS_AT_ONCE, 'cpuUnits': w.CPU_UNITS, " +
           "'defaultBatchSize': w.DEFAULT_BATCH_SIZE, 'defaultTagBatchSize': w.DEFAULT_TAG_BATCH_SIZE, " +
-          "'resultsFolder': r.RESULTS_FOLDER}))",
+          "'resultsFolder': r.RESULTS_FOLDER, 'sceneMaxTags': w.SCENE_MAX_TAGS, 'sceneDefaults': " +
+          "{'embeddingWeight': d.embedding_weight, 'minSceneDuration': d.min_scene_duration, " +
+          "'minCoverage': d.min_coverage, 'includeTags': d.include_tags, 'includeFrames': False}}))",
       ],
       { cwd: project, encoding: "utf8" },
     ),
@@ -368,7 +376,7 @@ describe("the Plugin's declarations", () => {
     expect(findingsOf(classifyFramesFlowOf({ lists: "file", output: "D:/Classes" }))).toEqual([]);
     expect(findingsOf(classifyFramesFlowOf({ lists: "both" })).map((f) => f.rule)).toContain("FD-V33");
     expect(plugin.profile?.startup).not.toContain("outputDir");
-    for (const type of ["ClassifyFrames", "TagFrames"])
+    for (const type of ["ClassifyFrames", "TagFrames", "TagScenes"])
       expect(plugin.nodeTypes?.[type]?.profile).toContain("outputDir");
     for (const type of ["ClassifyImage", "TagImage"])
       expect(plugin.nodeTypes?.[type]?.profile).not.toContain("outputDir");
@@ -655,6 +663,150 @@ describe("TagFrames", () => {
     expect(
       findings(outputSchema, { ...result, frames: [{ timestamp: 1.5, tags: [{ name: "1girl" }], rating }] }),
     ).not.toEqual([]);
+  });
+});
+
+describe("TagScenes", () => {
+  const worker = plugin.workers?.tagScenes;
+  const settingsSchema = worker?.settingsSchema as JsonSchema & {
+    properties: Record<string, JsonSchema & { description?: string; properties?: unknown }>;
+  };
+  const outputSchema = worker?.outputSchema as JsonSchema & {
+    required: string[];
+    examples: unknown[];
+    properties: Record<string, JsonSchema & { items?: JsonSchema & { properties: Record<string, unknown> } }>;
+  };
+  const tagScenesFlowOf = (settings: Record<string, unknown>) => flowOf(settings, "TagScenes");
+
+  it("runs two Tasks at a time on a Worker of its own, on a pool as TagFrames', shown with the tag icon", () => {
+    const scenes = plugin.nodeTypes?.TagScenes;
+    expect(scenes?.worker).toBe("tagScenes");
+    expect((worker as { python?: string } | undefined)?.python).toBe("image_tags.worker:TagScenes");
+    expect(scenes?.pool).toEqual(plugin.nodeTypes?.TagFrames?.pool);
+    expect(scenes?.pool).toMatchObject({ maxThreads: 1, maxConcurrentTasks: 2 });
+    expect(scenes?.profile).toEqual(plugin.nodeTypes?.TagFrames?.profile);
+    expect(scenes?.icon).toBe("tag");
+    expect(scenes?.description).toBe(
+      "Tags a video's frames and groups them into scenes: each scene's tags, highlights and rating, and the video's.",
+    );
+  });
+
+  it("takes ClassifyFrames' input: a `path` or a list of `frames`", () => {
+    expect(worker?.inputSchema).toBe(plugin.workers?.classifyFrames?.inputSchema);
+  });
+
+  it("takes TagImage's tagger and thresholds, its grouping settings, and where its answers go", () => {
+    const tagImage = plugin.workers?.tagImage?.settingsSchema as typeof settingsSchema;
+    const classifyFrames = plugin.workers?.classifyFrames?.settingsSchema as typeof settingsSchema;
+    expect(Object.keys(settingsSchema.properties)).toEqual([
+      "tagger",
+      "thresholds",
+      "maxTags",
+      "embeddingWeight",
+      "minSceneDuration",
+      "ignoreTags",
+      "minCoverage",
+      "includeTags",
+      "includeFrames",
+      "lists",
+      "output",
+      "overwrite",
+    ]);
+    expect(settingsSchema.properties.tagger).toEqual(tagImage.properties.tagger);
+    expect(settingsSchema.properties.thresholds?.properties).toEqual(
+      tagImage.properties.thresholds?.properties,
+    );
+    for (const key of ["lists", "output", "overwrite"])
+      expect(settingsSchema.properties[key]).toEqual(classifyFrames.properties[key]);
+    expect(findingsOf(tagScenesFlowOf({}))).toEqual([]);
+    expect(
+      findingsOf(
+        tagScenesFlowOf({
+          tagger: "pixai",
+          thresholds: { character: 0.5 },
+          maxTags: 10,
+          embeddingWeight: 0,
+          minSceneDuration: 0,
+          ignoreTags: ["simple_background"],
+          minCoverage: 1,
+          includeTags: false,
+          includeFrames: true,
+          lists: "file",
+          output: "D:/Scenes",
+          overwrite: true,
+        }),
+      ),
+    ).toEqual([]);
+    for (const settings of [
+      { embeddingWeight: 1.5 },
+      { embeddingWeight: -0.1 },
+      { minSceneDuration: -1 },
+      { minCoverage: 2 },
+      { ignoreTags: "solo" },
+      { ignoreTags: [""] },
+      { includeTags: "no" },
+      { includeFrames: 1 },
+      { maxTags: 0 },
+      { lists: "both" },
+      { sceneCount: 3 },
+    ])
+      expect(findingsOf(tagScenesFlowOf(settings)).map((f) => f.rule)).toContain("FD-V33");
+  });
+
+  it("says each grouping setting's default, the Worker's own", () => {
+    expect(pythonWorker().sceneMaxTags).toBe(SCENE_MAX_TAGS);
+    expect(pythonWorker().sceneDefaults).toEqual(SCENE_DEFAULTS);
+    expect(settingsSchema.properties.maxTags?.description).toContain(`left empty, ${SCENE_MAX_TAGS}`);
+    for (const key of ["embeddingWeight", "minSceneDuration", "minCoverage"] as const)
+      expect(settingsSchema.properties[key]?.description).toContain(`left empty, ${SCENE_DEFAULTS[key]}`);
+    expect(settingsSchema.properties.includeTags?.description).toContain("Left empty, true");
+    expect(settingsSchema.properties.includeFrames?.description).toContain("Left empty, false");
+  });
+
+  it("hands on the scenes and the summary, its examples among what it hands on", () => {
+    expect(outputSchema.examples.length).toBeGreaterThan(1);
+    for (const example of outputSchema.examples) expect(findings(outputSchema, example)).toEqual([]);
+    const [example] = outputSchema.examples as Record<string, unknown>[];
+    expect(findings(outputSchema, { ...example, threshold: null })).toEqual([]);
+    expect(findings(outputSchema, { ...example, scenes: [{ index: 0 }] })).not.toEqual([]);
+    expect(findings(outputSchema, { ...example, count: "31" })).not.toEqual([]);
+    expect(findings(outputSchema, { ...example, summary: { rating: { label: "general" } } })).not.toEqual([]);
+  });
+
+  it("requires nothing that lists file takes to the file", () => {
+    expect(outputSchema.required).not.toContain("scenes");
+    expect(outputSchema.required).not.toContain("frames");
+    expect(outputSchema.required).toEqual(expect.arrayContaining(["summary", "count"]));
+    const summed = {
+      tagger: "wd-eva02-large",
+      frameCount: 278,
+      duration: 1510.26,
+      threshold: 1.12,
+      summary: { tags: [], rating: { label: "general", scores: { general: 1 } } },
+      count: 31,
+      file: "D:/Tags/ep01.0123456789abcdef.json",
+      reused: true,
+    };
+    expect(findings(outputSchema, summed)).toEqual([]);
+  });
+
+  it("hands on, with includeFrames, each frame as TagFrames does, with whether it is blank and its scene", () => {
+    const tagFrames = plugin.workers?.tagFrames?.outputSchema as typeof outputSchema;
+    const frame = outputSchema.properties.frames?.items;
+    expect(frame?.properties).toEqual({
+      ...tagFrames.properties.frames?.items?.properties,
+      blank: expect.objectContaining({ type: "boolean" }),
+      scene: expect.objectContaining({ type: "integer" }),
+    });
+    const [example] = outputSchema.examples as Record<string, unknown>[];
+    const rating = { label: "general", scores: { general: 0.9, sensitive: 0.1 } };
+    const frames = [
+      { path: "D:/Frames/a.jpg", timestamp: 1.5, tags: [], rating, blank: false, scene: 0 },
+      { path: "D:/Frames/b.jpg", timestamp: 3.5, tags: [], rating, blank: true, scene: 0 },
+    ];
+    expect(findings(outputSchema, { ...example, frames })).toEqual([]);
+    const { scene: _, ...sceneless } = frames[0] as Record<string, unknown>;
+    expect(findings(outputSchema, { ...example, frames: [sceneless] })).not.toEqual([]);
   });
 });
 

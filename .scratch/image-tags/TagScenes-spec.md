@@ -156,8 +156,8 @@ to vary between videos.
 
 - `frame` everywhere is the place in the **input** frame list: the folder's order by name, or the list's order. `path`
   is that frame's image, as `_named` gives it, or absent for a sheet's cell.
-- With `includeFrames`, each frame is TagFrames' per-frame shape (`timestamp`, `path`, `tags`, `rating`, and `video`
-  when its thumbnail names one), plus `blank` (bool) and `scene` (its scene's `index`).
+- With `includeFrames`, each frame is TagFrames' per-frame shape (`timestamp`, `path`, `tags`, `rating`), plus `blank`
+  (bool) and `scene` (its scene's `index`). `ignoreTags` applies to a frame's own tags too.
 - `peaks` lists only ratings more severe than `label`, each at the frame where it scores highest.
 - `highlights[].frames` is how many frames reached `PEAK_REPEAT` (§5.5).
 - With `includeTags: false`, scenes and the summary have no `tags` or `highlights`.
