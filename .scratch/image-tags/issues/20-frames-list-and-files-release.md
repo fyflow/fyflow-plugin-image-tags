@@ -5,7 +5,7 @@
 
 **Blocked by:** 18, 19, 21, 22, 23, 24
 
-**Status:** blocked (waits for TagScenes; then `pnpm check` again, and tag, push and index PR wait for the user)
+**Status:** blocked (waits for TagScenes; then `pnpm check` and `pnpm test:models` again, and tag, push and index PR wait for the user)
 
 - [x] Version 0.4.0 in `package.json`, `plugin.ts` and `python/pyproject.toml`, then `uv lock`. It is a minor version
   because the frames output schemas no longer require `frames` (or `path`).

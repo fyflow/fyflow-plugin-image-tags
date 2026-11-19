@@ -439,11 +439,13 @@ category's threshold. A category the tagger lacks fails the Task, naming the tag
 
 Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
 
-- `pnpm check`: typecheck, lint, the declarations test (vitest) and the Python tests (pytest, through uv). The first
-  run fetches the classifiers' pinned models into `python/.cache/`. The taggers are never downloaded by the tests:
-  the tagging tests run a small stand-in tagger, and a tagger's golden tests (marked `slow`) run only when its files
-  are in `python/.cache/models/`, laid out as a [`modelDir`](#without-internet-modeldir) (skipped otherwise; `-m "not
-  slow"` leaves them out).
+- `pnpm check`: typecheck, lint, the declarations test (vitest) and the Python tests (pytest, through uv), which
+  check what the code does. The first run fetches the classifiers' pinned models into `python/.cache/`. The taggers
+  are never downloaded by the tests: the tagging tests run a small stand-in tagger.
+- `pnpm test:models`: the tests marked `slow`, which run the real taggers (golden scores, the embedding, TagScenes on
+  a planted video), several minutes on the CPU. Run them after changing how a model is run or read. A tagger's run
+  only when its files are in `python/.cache/models/`, laid out as a [`modelDir`](#without-internet-modeldir), and
+  are skipped otherwise.
 - `pnpm plugin-folder [dir]`: the folder to install from the app's Plugins page ("Choose folder…"), by default
   `dist/image-tags/`.
 - `pnpm sheets`: remakes the frame-sheet fixtures (`python/tests/fixtures/sheets/`) with the video-thumbnail Plugin's

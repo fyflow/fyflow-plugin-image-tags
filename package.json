@@ -34,7 +34,8 @@
     "lint": "biome check .",
     "format": "biome check --write .",
     "test": "vitest run",
-    "test:python": "uv run --project python --extra cpu --group test pytest python",
+    "test:python": "uv run --project python --extra cpu --group test pytest python -m \"not slow\"",
+    "test:models": "uv run --project python --extra cpu --group test pytest python -m slow",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm test:python"
   },
   "peerDependencies": {
