@@ -62,7 +62,9 @@ def test_each_frame_is_tagged_as_tag_image_tags_its_cell_cut_out_by_hand(tagger_
             image.crop((i % 3 * 160, i // 3 * 90, i % 3 * 160 + 160, i // 3 * 90 + 90)).save(cell)
             cells.append(cell)
 
-    result = tag_frames(config, SHEET, thresholds=EVERY_TAG)
+    # One frame a pass, as TagImage tags one image: on Linux, onnxruntime's CPU kernels give a batch of 4 scores some
+    # 4e-4 off one image's, as much as a cell cut out a pixel off would.
+    result = tag_frames({**config, "tagBatchSize": 1}, SHEET, thresholds=EVERY_TAG)
 
     alone = TagImage(config)
     for frame, cell in zip(result["frames"], cells, strict=True):

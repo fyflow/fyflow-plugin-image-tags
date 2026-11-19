@@ -24,6 +24,10 @@ LINK_WINDOW = 30.0
 MAX_LINK_LAG = 15
 #: The share of compared pairs, from the top, that link: the link threshold is this percentile of their similarity.
 LINK_PERCENTILE = 85
+#: How far below the link threshold, in z-units, a pair still links. Identical frames tie, but their pairs come out of
+#: the arithmetic a little apart (rounding; on Linux, onnxruntime's CPU kernels embed a frame some 2e-4 z-units
+#: differently by its place in a batch), and when the threshold falls on such a tie, that must not cut between them.
+_LINK_TOLERANCE = 1e-3
 #: A frame counts towards a tag's idf when it scores this or more on it.
 DF_SCORE = 0.2
 #: Added to every tag's idf, so a tag in every frame still counts a little.
@@ -210,7 +214,10 @@ def group(frames: TaggedFrames, settings: Settings = Settings()) -> Grouping:
     # Cuts, as time places: a cut k falls before the frame at time place k.
     first, second = pairs
     reach = np.arange(len(seen))
-    linked = (similarity >= threshold) & (s_emb >= 0) if threshold is not None else np.zeros(0, bool)
+    if threshold is None:
+        linked = np.zeros(0, bool)
+    else:
+        linked = (similarity >= threshold - _LINK_TOLERANCE) & (s_emb >= 0)
     np.maximum.at(reach, first[linked], second[linked])
     open_until = np.maximum.accumulate(reach)
     cut_after = set((np.flatnonzero(open_until[:-1] < np.arange(1, len(seen))) + 1).tolist())

@@ -233,6 +233,25 @@ def test_a_short_scene_merges_into_the_more_similar_neighbour():
         assert firsts(group(frames)) == expected
 
 
+def test_pairs_a_hair_below_the_threshold_still_link(monkeypatch):
+    # Identical frames: their pairs' similarity ties, but the arithmetic leaves some a bit below the rest. Those
+    # crossing the middle are put a bit below here, which would cut there if a tie had to be met exactly.
+    frames, _ = planted([(60, "A")], noise=0)
+    middle = len(frames) // 2
+    real = scenes._similarity
+
+    def tied(*args):
+        similarity, s_emb, _ = real(*args)
+        first, second = args[3]
+        similarity = np.ones(len(first))
+        similarity[(first < middle) & (second >= middle)] = 1.0 - 2e-4
+        return similarity, s_emb, 1.0
+
+    monkeypatch.setattr(scenes, "_similarity", tied)
+
+    assert firsts(group(frames, Settings(min_scene_duration=0))) == [0]
+
+
 def test_one_frame_is_one_scene():
     frames = make([3.0], [unit(np.ones(WIDTH))], [[0.9] + [0] * (len(NAMES) - 5) + [0.9, 0.1, 0, 0]])
 
