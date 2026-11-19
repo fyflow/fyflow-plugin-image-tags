@@ -446,6 +446,10 @@ Needs Node 26, pnpm and [uv](https://docs.astral.sh/uv/).
   a planted video), several minutes on the CPU. Run them after changing how a model is run or read. A tagger's run
   only when its files are in `python/.cache/models/`, laid out as a [`modelDir`](#without-internet-modeldir), and
   are skipped otherwise.
+- **On a GPU** (by hand, such as `python/scripts/review_scenes.py`): `uv run --extra cuda …` in `python/`. The `cpu`
+  and `cuda` builds share one environment, and `uv run` only adds packages, so both end up installed and the checks then
+  run on the GPU and fail. To switch back, run `uv sync --extra cpu --group test --reinstall-package onnxruntime` in
+  `python/`.
 - `pnpm plugin-folder [dir]`: the folder to install from the app's Plugins page ("Choose folder…"), by default
   `dist/image-tags/`.
 - `pnpm sheets`: remakes the frame-sheet fixtures (`python/tests/fixtures/sheets/`) with the video-thumbnail Plugin's
