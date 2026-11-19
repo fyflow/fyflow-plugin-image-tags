@@ -119,9 +119,24 @@ def test_a_folder_with_no_images_fails(tagger_hub, config, tmp_path):
         tag_frames(config, folder)
 
 
-def test_an_input_without_a_path_fails(tagger_hub, config):
-    with pytest.raises(Exception, match=r"no `path`: the frames to tag"):
+def test_an_input_without_a_path_or_frames_fails(tagger_hub, config):
+    with pytest.raises(Exception, match=r"no `path` or `frames`: the frames to tag"):
         run(TagFrames(config), Task({}, {"tagger": "stand-in"}))
+
+
+def test_a_list_of_frames_is_tagged_in_its_order_with_each_frame_s_timestamp_and_path(tagger_hub, config):
+    tiny = str(IMAGES / "tiny.jpg")
+    frames = [{"path": str(ANIME), "timestamp": 3.5}, {"path": tiny}]
+
+    result = run(TagFrames(config), Task({"frames": frames}, {"tagger": "stand-in", "thresholds": EVERY_TAG}))
+
+    assert "path" not in result
+    assert [(frame["path"], frame["timestamp"]) for frame in result["frames"]] == [(str(ANIME), 3.5), (tiny, None)]
+    alone = TagImage(config)
+    for frame, path in zip(result["frames"], [ANIME, tiny], strict=True):
+        want = run(alone, frames_task(path, thresholds=EVERY_TAG))
+        assert frame["rating"]["scores"] == pytest.approx(want["rating"]["scores"], abs=1e-5)
+    assert result["warnings"] == [cpu_warning()]
 
 
 # Its settings, each frame's own.

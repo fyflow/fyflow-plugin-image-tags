@@ -185,6 +185,9 @@ function foldersIn(folder: string): string[] {
  * file (`.<file>.*.part`, left by one that was interrupted) is in its version's folder, so it has no item of its own:
  * it goes with that version. Only directory listings, and nothing throws: a folder that cannot be read has no items.
  */
+/** The Plugin's own folder for the frames' answers in its data directory (`RESULTS_FOLDER` in `results.py`). */
+export const RESULTS_FOLDER = "results";
+
 function modelsData(dataDir: string): PluginData {
   // By version folder, the ids of the catalogue models kept in it: two precisions of one tagger share their commit's.
   const pinned = new Map<string, string[]>();
@@ -215,9 +218,19 @@ function modelsData(dataDir: string): PluginData {
   // The catalogue's models first, in its order, then what earlier versions left.
   const order = [...pinned.keys()];
   const rank = (folder: string) => (order.includes(folder) ? order.indexOf(folder) : order.length);
+  // The frames' answers ClassifyFrames and TagFrames wrote with `lists: "file"` and no folder of their own.
+  const answers: PluginDataItem[] = existsSync(join(dataDir, RESULTS_FOLDER))
+    ? [
+        {
+          path: RESULTS_FOLDER,
+          label: "Frames' answers written by ClassifyFrames and TagFrames",
+          lost: "A Task runs its models again; a Flow that reads a file from here can no longer",
+        },
+      ]
+    : [];
   return {
-    summary: "Downloaded models",
-    items: found.sort((a, b) => rank(a) - rank(b)).map(itemOf),
+    summary: answers.length > 0 ? "Downloaded models and frames' answers" : "Downloaded models",
+    items: [...found.sort((a, b) => rank(a) - rank(b)).map(itemOf), ...answers],
   };
 }
 
@@ -309,8 +322,40 @@ const profileSchema = {
         "batches the images of the Tasks running at once; TagFrames runs a Task's frames that many at a time. " +
         "Takes effect at the next Reload.",
     },
+    outputDir: {
+      type: "string",
+      description:
+        "Where ClassifyFrames and TagFrames write the frames' answers when `lists` is file and the Node names no " +
+        "`output`: an absolute folder in an Allowed root with write access; left empty, the Plugin's own results " +
+        "folder in its data directory. Read as each Task is dispatched, so a Flow or Node may set its own.",
+    },
   },
   additionalProperties: false,
+};
+
+// What ClassifyFrames and TagFrames take beside their image Node Type's settings: where each frame's answer goes
+// (`results.py`).
+const fileSettingsProperties = {
+  lists: {
+    enum: ["result", "file"],
+    description:
+      "Where each frame's answer goes; left empty, result: in the Task's result. file: in a JSON file holding the " +
+      "whole result, so a large one does not sit in the Flow; the Task then hands on the rest, with `file`, `count` " +
+      "and `reused`. A file made before for the same frames (unchanged), settings and models is handed on again " +
+      "without running a model.",
+  },
+  output: {
+    type: "string",
+    minLength: 1,
+    description:
+      "With lists file: a .json file to write (every time), or a folder to name one in; an absolute path in an " +
+      "Allowed root with write access. Left empty, the Profile's outputDir, else the Plugin's own results folder.",
+  },
+  overwrite: {
+    type: "boolean",
+    description:
+      "With lists file: run the models again even when a file made before for the same frames is there",
+  },
 };
 
 // A made-up path for the schemas' examples, which the app's editor shows beside each Node's fields.
@@ -399,29 +444,88 @@ const outputSchema = {
 // A made-up frame sheet, as VideoThumbnail hands one on, for ClassifyFrames' examples.
 const EXAMPLE_SHEET = "D:/Thumbnails/episode-01.3f9a1c2b7d4e.jpg";
 
+// Exactly one of `path` and `frames`: the schema subset has no `oneOf`, so the Worker refuses neither or both.
 const framesInputSchema = {
   type: "object",
   description:
     "The frames at `path`: a frame sheet made by VideoThumbnail (its frames are cut out by the places it wrote in " +
-    "it), a folder of images (each image directly inside it, in name order, at most 1000), or any other image as " +
-    "one frame",
-  required: ["path"],
+    "it), a folder of images (each image directly inside it, in name order, at most 10000), or any other image as " +
+    "one frame; or the images `frames` lists, in its order. Give one of `path` and `frames`. A thumbnail made by " +
+    "VideoThumbnail (a JPEG of one frame) gives its frame the timestamp and video it was written with",
   properties: {
     path: {
       type: "string",
       minLength: 1,
       description: "A frame sheet, a folder of images or an image, an absolute path",
     },
+    frames: {
+      type: "array",
+      minItems: 1,
+      // The subset has no `maxItems`: the Worker refuses more than 10000.
+      description:
+        "The frames, each an image (a frame sheet too is read as one image), in this order, at most 10000",
+      items: {
+        type: "object",
+        required: ["path"],
+        properties: {
+          path: { type: "string", minLength: 1, description: "The frame's image, an absolute path" },
+          timestamp: {
+            type: ["number", "null"],
+            minimum: 0,
+            description:
+              "Where in the video the frame is, in seconds; left out or null, a thumbnail's own timestamp, if any",
+          },
+        },
+      },
+    },
   },
-  examples: [{ path: EXAMPLE_SHEET }, { path: "D:/Frames/episode-01" }],
+  examples: [
+    { path: EXAMPLE_SHEET },
+    { path: "D:/Frames/episode-01" },
+    {
+      frames: [
+        { path: "D:/Frames/episode-01/0001.jpg", timestamp: 312.4 },
+        { path: "D:/Frames/episode-01/0002.jpg", timestamp: 624.8 },
+      ],
+    },
+  ],
+};
+
+// What a frames Task hands on with `lists: "file"`, instead of `frames`.
+const fileResultProperties = {
+  file: {
+    type: "string",
+    description: "with lists file: the JSON file holding the whole result, `frames` included",
+  },
+  count: { type: "integer", description: "with lists file: how many frames the file has an answer for" },
+  reused: {
+    type: "boolean",
+    description:
+      "with lists file: whether the file was made before, for the same frames and settings, and no model ran",
+  },
+};
+
+// Each frame's own image, for a folder's or a list's frame.
+const framePathProperty = {
+  type: "string",
+  description:
+    "the frame's own image, for a folder's frame (the folder joined with its file name) or a listed one",
 };
 
 const framesOutputSchema = {
   type: "object",
-  required: [...resultRequired, "agreement", "frames"],
+  required: [...resultRequired.filter((key) => key !== "path"), "agreement"],
   properties: {
     ...resultProperties,
-    path: { type: "string", description: "the frame sheet's, folder's or image's absolute path" },
+    path: {
+      type: "string",
+      description: "the frame sheet's, folder's or image's absolute path, as given; none for a `frames` list",
+    },
+    video: {
+      type: "string",
+      description:
+        "the video a frame sheet was made of, or the one video the frames' thumbnails name, as its maker wrote it",
+    },
     tag: {
       ...resultProperties.tag,
       description: `over all the frames: ${resultProperties.tag.description}`,
@@ -439,16 +543,21 @@ const framesOutputSchema = {
       description:
         "the share of frames whose own top label is the tag (the top label, when the tag is uncertain), from 0 to 1",
     },
+    ...fileResultProperties,
     frames: {
       type: "array",
-      description: "each frame's own answer, in the sheet's or folder's order",
+      description:
+        "each frame's own answer, in the sheet's, folder's or list's order; in `file` instead with lists file",
       items: {
         type: "object",
         required: ["timestamp", "tag", "scores"],
         properties: {
+          path: framePathProperty,
           timestamp: {
             type: ["number", "null"],
-            description: "where in the video the frame is, in seconds; null for a folder's frame or an image",
+            description:
+              "where in the video the frame is, in seconds: a sheet's, the one listed, or a thumbnail's own; null " +
+              "when none is known",
           },
           tag: { type: "string", description: "the frame's top label, or uncertain below minConfidence" },
           scores: { type: "object", description: "the frame's score for every label, by label" },
@@ -527,6 +636,16 @@ const tagSettingsSchema = {
   additionalProperties: false,
 };
 
+const framesSettingsSchema = {
+  ...settingsSchema,
+  properties: { ...settingsSchema.properties, ...fileSettingsProperties },
+};
+
+const tagFramesSettingsSchema = {
+  ...tagSettingsSchema,
+  properties: { ...tagSettingsSchema.properties, ...fileSettingsProperties },
+};
+
 const RATING_EXAMPLE = {
   label: "general",
   scores: { general: 0.86, sensitive: 0.12, questionable: 0.01, explicit: 0 },
@@ -603,19 +722,22 @@ const tagOutputSchema = {
 
 const tagFramesOutputSchema = {
   type: "object",
-  required: ["path", "tagger", "frames"],
+  required: ["tagger"],
   properties: {
-    path: { type: "string", description: "the frame sheet's, folder's or image's absolute path" },
-    video: resultProperties.video,
+    path: framesOutputSchema.properties.path,
+    video: framesOutputSchema.properties.video,
     tagger: { type: "string", description: "the tagger that ran" },
+    ...fileResultProperties,
     frames: {
       type: "array",
       description:
-        "each frame's own tags and rating, in the sheet's or folder's order, as TagImage gives them for an image",
+        "each frame's own tags and rating, in the sheet's, folder's or list's order, as TagImage gives them for an " +
+        "image; in `file` instead with lists file",
       items: {
         type: "object",
         required: ["timestamp", "tags", "rating"],
         properties: {
+          path: framePathProperty,
           timestamp: framesOutputSchema.properties.frames.items.properties.timestamp,
           ...tagProperties,
         },
@@ -692,7 +814,7 @@ export default definePlugin({
     },
     classifyFrames: {
       python: "image_tags.worker:ClassifyFrames",
-      settingsSchema,
+      settingsSchema: framesSettingsSchema,
       inputSchema: framesInputSchema,
       outputSchema: framesOutputSchema,
     },
@@ -704,7 +826,7 @@ export default definePlugin({
     },
     tagFrames: {
       python: "image_tags.worker:TagFrames",
-      settingsSchema: tagSettingsSchema,
+      settingsSchema: tagFramesSettingsSchema,
       inputSchema: framesInputSchema,
       outputSchema: tagFramesOutputSchema,
     },
@@ -729,7 +851,7 @@ export default definePlugin({
     },
     ClassifyFrames: {
       worker: "classifyFrames",
-      profile: ["modelDir", "batchSize"],
+      profile: ["modelDir", "batchSize", "outputDir"],
       // One Python process per Profile, holding its resident units; two Tasks at once, so that one Task's decoding
       // and cutting out of frames overlaps the other's forward passes. A Task runs its frames through the models
       // `batchSize` at a time.
@@ -763,7 +885,7 @@ export default definePlugin({
     },
     TagFrames: {
       worker: "tagFrames",
-      profile: ["modelDir", "tagBatchSize"],
+      profile: ["modelDir", "tagBatchSize", "outputDir"],
       // A Worker and pool of its own, as ClassifyFrames has: fyflow gives each Node Type its own pool, so it cannot
       // share TagImage's process and session. It holds the same resident units, so the two take turns on the `gpu`
       // unit and a GPU never holds two copies of the tagger. Two Tasks at once, so that one Task's decoding and

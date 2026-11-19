@@ -51,8 +51,8 @@ A cancelled Task leaves its batch at once, and the other Tasks' results are unto
 
 ### `ClassifyFrames`
 
-A whole video per Task, from its frames: the same `classifier` and `minConfidence` settings, and `path` in its input
-being one of
+A whole video per Task, from its frames: the same `classifier` and `minConfidence` settings, and in its input either
+`path` or `frames` (one of them; neither or both fails the Task). `path` is one of
 
 - a **frame sheet** made by the video-thumbnail Plugin's `VideoThumbnail` (`fyflow-ext.video-thumbnail`): a JPEG
   whose comment holds where each frame was drawn and its timestamp. Each frame is cut out at its place and
@@ -60,9 +60,16 @@ being one of
   `The frame sheet has no frames:`. A sheet with timestamps drawn on it is still classified, with a `warnings`
   entry: the models see the digits.
 - a **folder**: every image directly inside it (not in its subfolders), in name order, each one frame. A frame sheet
-  in a folder is a plain image. More than 1000 images fail with `The folder has more than 1000 images:` (a large
+  in a folder is a plain image. More than 10000 images fail with `The folder has more than 10000 images:` (a large
   set belongs in a Flow `map` over `ClassifyImage`), none with `The folder has no images:`.
 - any other **image**: one frame.
+
+`frames` lists the frames instead, each `{ path, timestamp? }`: an image (a frame sheet too is one image), read in the
+list's order, with its timestamp in seconds when you know it. 1 to 10000 of them; an entry that is not an image, a
+timestamp below 0, or a path outside the Allowed roots fails the Task, naming the frame by its index.
+
+A **thumbnail** made by `VideoThumbnail` (a JPEG of one frame, whose comment holds its `timestamp` and `video`) gives
+its frame that timestamp, alone, in a folder or in a list; a timestamp listed in `frames` wins over it.
 
 So `VideoThumbnail → ClassifyFrames → Edges on outcome.result.tag` needs no Transform: `VideoThumbnail` hands on the
 sheet's `path`.
@@ -73,9 +80,14 @@ It hands on what `ClassifyImage` does, over all the frames, and more:
   `confidence` its mean score;
 - `agreement`: the share of frames whose own top label is the tag (the top label, when the tag is `uncertain`), from 0
   to 1;
-- `frames`: each frame's `{ timestamp, tag, scores }`, in the sheet's or folder's order, `timestamp` (seconds into
-  the video) null for a folder or an image. A Flow can find mixed content in it (live action with anime inserts);
-- `video`: the video's path, as the sheet has it.
+- `frames`: each frame's `{ path?, timestamp, tag, scores }`, in the sheet's, folder's or list's order. `timestamp`
+  is seconds into the video: a sheet's, the one listed, or a thumbnail's own, else null. `path` is the frame's own
+  image, for a folder's frame (the folder joined with its file name) or a listed one. A Flow can find mixed content in
+  it (live action with anime inserts);
+- `path`: the `path` given; none for a `frames` list;
+- `video`: the video's path, as the sheet has it, or the one video the frames' thumbnails name.
+
+With [`lists: "file"`](#answers-in-a-file), `frames` goes to a file instead.
 
 Frames go through the models `batchSize` at a time (16 unless the Profile says otherwise); the Task's progress moves
 on, and a Cancel is looked at, after each batch.
@@ -123,21 +135,49 @@ its frames one by one.
 
 ### `TagFrames`
 
-A whole video per Task, from its frames: `TagImage`'s settings (`tagger`, `thresholds`, `maxTags`), and `path` in its
-input read as [`ClassifyFrames`](#classifyframes) reads it: a frame sheet (each frame cut out, with its timestamp), a
-folder (its images in name order, at most 1000, no timestamps) or one image. It hands on
-`{ path, video?, tagger, frames, warnings? }`:
+A whole video per Task, from its frames: `TagImage`'s settings (`tagger`, `thresholds`, `maxTags`), and `path` or
+`frames` in its input read as [`ClassifyFrames`](#classifyframes) reads them: a frame sheet (each frame cut out, with
+its timestamp), a folder (its images in name order, at most 10000), one image, or a list of images with their
+timestamps; a thumbnail gives its own timestamp. It hands on `{ path?, video?, tagger, frames, warnings? }`:
 
-- `frames`: each frame's `{ timestamp, tags, rating }`, in the sheet's or folder's order, `tags` and `rating` as
+- `frames`: each frame's `{ path?, timestamp, tags, rating }`, in the sheet's, folder's or list's order, `path` and
+  `timestamp` as `ClassifyFrames` gives them, `tags` and `rating` as
   `TagImage` gives them for an image, with the same settings applied to every frame;
 - `video` and `warnings` as `ClassifyFrames` gives them (timestamps drawn on a sheet, a folder's image outside the
   Allowed roots), and the warning of a tagger run on the CPU.
+
+With [`lists: "file"`](#answers-in-a-file), `frames` goes to a file instead.
 
 It hands on each frame's own answer only: summing the frames up (the tags most frames have, say) is left to the Flow.
 Frames go through the tagger [`tagBatchSize`](#tagbatchsize) at a time; the Task's progress ("Tagged 8 of 16
 frames") moves on, and a Cancel is looked at, after each batch. One process per Profile runs two Tasks at once, as
 `ClassifyFrames`' does. It has a pool of its own, apart from `TagImage`'s (fyflow gives each Node Type one), holding
 the same `gpu` unit: so the two take turns on the GPU, and a GPU never holds two copies of the tagger.
+
+### Answers in a file
+
+A Task over thousands of frames has a large answer: 10000 frames tagged can be tens of MB, more than a Task may hand
+on (16 MiB), and too much to keep in a Flow. `ClassifyFrames` and `TagFrames` can write it to a file instead, as
+VideoThumbnail's `ExtractFrames` does with its lists. Three Node settings:
+
+| Setting | What it is |
+| --- | --- |
+| `lists` | `result` (the default): `frames` is in the Task's result. `file`: the whole result, `frames` included, is written to a JSON file, and the Task hands on the rest, with `file` (its path), `count` (its frames) and `reused`. |
+| `output` | With `file`: a `.json` file to write, or a folder to name one in. An absolute path in an Allowed root with `write` access. |
+| `overwrite` | With `file`: run the models again even when a file made before is there. |
+
+**Where the file goes.** First `output`. Without it, the Profile's `outputDir` (a per-Task field, which a Flow or
+Node may set too; also needing `write` access). Without that, the Plugin's own `results/` folder in its data
+directory, which the [Data](#data) link lists and nothing clears by itself.
+
+**Reuse.** In a folder, the file is named `<name>.<key>.json`, after the video (or the sheet, folder, or a list's
+first frame's folder). The key covers the Node Type, the input, each frame file's path, size and last change, the
+settings and the models' commits. So a Task on unchanged frames with the same settings hands on the file it made
+before (`reused: true`) without running a model, unless `overwrite` is set. A `.json` path given is written every
+time. A file is written beside its place and renamed into it, so a file there is always whole.
+
+A Flow reads the file with fyflow.fs's `ReadFile` (`as: "json"`), which needs a `read` root on its folder. With
+`lists: "result"`, a result too large to hand on fails the Task saying to set `lists` to `file`.
 
 ## Allowed roots
 
@@ -154,8 +194,9 @@ and so is each image read from it: a link in it that leads out of every root is 
 naming it (and if nothing else is left, the Task fails with why). A frame sheet's `video` is only handed on, never
 read, so it is not checked. The result's `path` is the path as given.
 
-The Plugin's data directory, where the models download, needs no root, nor does a Profile's `modelDir`: a Profile
-sets it itself.
+The Plugin's data directory, where the models download and its own `results/` folder is, needs no root, nor does a
+Profile's `modelDir`: a Profile sets it itself. An `output` or `outputDir` it writes the frames' answers to needs a
+root with `write` access.
 
 ## Resources
 
@@ -252,7 +293,9 @@ lists each model version in the data directory's `models` folder with its size: 
 an earlier version, as not used by this version. Any of them can be deleted there, or the whole folder. Deleting a
 model only costs a download: the Host stops the Plugin's Workers first, and the next Task that needs it downloads it
 again. After an update, a model marked not used by this version can be cleared there. A Profile's `modelDir` is
-outside the data directory, so it is never listed or deleted.
+outside the data directory, so it is never listed or deleted. The `results/` folder, where
+[answers in a file](#answers-in-a-file) go when nothing else is named, is listed too once there is one: deleting it
+only means the next Task runs its models again.
 
 ### Without internet: `modelDir`
 

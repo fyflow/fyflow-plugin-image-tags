@@ -116,3 +116,14 @@ def test_a_link_to_a_folder_inside_the_reach_is_read_where_it_leads(hub, config,
     assert result["path"] == str(tmp_path / "shortcut")
     assert len(result["frames"]) == 1
     assert "warnings" not in result
+
+
+@pytest.mark.parametrize("worker_class", [ClassifyFrames, TagFrames])
+def test_a_listed_frame_outside_the_reach_fails_the_task(config, worker_class, tmp_path):
+    inside = tmp_path / "inside.jpg"
+    inside.write_bytes(ANIME.read_bytes())
+    roots = [{"path": str(tmp_path), "access": "read"}]
+    frames = [{"path": str(inside)}, {"path": str(ANIME)}]
+
+    with pytest.raises(PermissionError, match=r"is outside every Allowed root with read access"):
+        run(worker_class(config), Task({"frames": frames}, roots=roots))

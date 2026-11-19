@@ -29,6 +29,7 @@ import plugin, {
   MODELS,
   type ModelFile,
   RESIDENT_GROUPS,
+  RESULTS_FOLDER,
   TAGGERS,
 } from "../plugin.ts";
 
@@ -131,6 +132,7 @@ let workerConstants:
       cpuUnits: number;
       defaultBatchSize: number;
       defaultTagBatchSize: number;
+      resultsFolder: string;
     }
   | undefined;
 const pythonWorker = () => {
@@ -144,9 +146,10 @@ const pythonWorker = () => {
         "cpu",
         "python",
         "-c",
-        "import json; from image_tags import worker as w; print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
+        "import json; from image_tags import results as r, worker as w; print(json.dumps({'tasksAtOnce': w.TASKS_AT_ONCE, " +
           "'tagTasksAtOnce': w.TAG_TASKS_AT_ONCE, 'cpuUnits': w.CPU_UNITS, " +
-          "'defaultBatchSize': w.DEFAULT_BATCH_SIZE, 'defaultTagBatchSize': w.DEFAULT_TAG_BATCH_SIZE}))",
+          "'defaultBatchSize': w.DEFAULT_BATCH_SIZE, 'defaultTagBatchSize': w.DEFAULT_TAG_BATCH_SIZE, " +
+          "'resultsFolder': r.RESULTS_FOLDER}))",
       ],
       { cwd: project, encoding: "utf8" },
     ),
@@ -329,7 +332,7 @@ describe("the Plugin's declarations", () => {
       required: string[];
       examples: unknown[];
     };
-    expect(schema.required).toEqual(expect.arrayContaining(["agreement", "frames", "tag", "scores"]));
+    expect(schema.required).toEqual(expect.arrayContaining(["agreement", "tag", "scores"]));
     for (const example of schema.examples) expect(findings(schema, example)).toEqual([]);
     const result = {
       path: "D:/Thumbnails/clip.jpg",
@@ -351,6 +354,34 @@ describe("the Plugin's declarations", () => {
     expect(
       findings(schema, { ...result, frames: [{ timestamp: "1.5", tag: "real", scores: {} }] }),
     ).not.toEqual([]);
+    // A list's result has no `path` of its own; each frame names its image.
+    const { path: _, ...listed } = result;
+    const named = {
+      ...listed,
+      frames: result.frames.map((frame) => ({ path: "D:/Frames/a.jpg", ...frame })),
+    };
+    expect(findings(schema, named)).toEqual([]);
+  });
+
+  it("lets ClassifyFrames write its answers to a file, in a folder a Profile may name per Task", () => {
+    const classifyFramesFlowOf = (settings: Record<string, unknown>) => flowOf(settings, "ClassifyFrames");
+    expect(findingsOf(classifyFramesFlowOf({ lists: "file", output: "D:/Classes" }))).toEqual([]);
+    expect(findingsOf(classifyFramesFlowOf({ lists: "both" })).map((f) => f.rule)).toContain("FD-V33");
+    expect(plugin.profile?.startup).not.toContain("outputDir");
+    for (const type of ["ClassifyFrames", "TagFrames"])
+      expect(plugin.nodeTypes?.[type]?.profile).toContain("outputDir");
+    for (const type of ["ClassifyImage", "TagImage"])
+      expect(plugin.nodeTypes?.[type]?.profile).not.toContain("outputDir");
+  });
+
+  it("takes, in ClassifyFrames' input, a `path` or a list of `frames`, each an image with its timestamp", () => {
+    const schema = plugin.workers?.classifyFrames?.inputSchema as JsonSchema & { examples: unknown[] };
+    for (const example of schema.examples) expect(findings(schema, example)).toEqual([]);
+    expect(findings(schema, { frames: [{ path: "D:/Frames/a.jpg" }] })).toEqual([]);
+    expect(findings(schema, { frames: [{ path: "D:/Frames/a.jpg", timestamp: null }] })).toEqual([]);
+    expect(findings(schema, { frames: [] })).not.toEqual([]);
+    expect(findings(schema, { frames: [{ timestamp: 1 }] })).not.toEqual([]);
+    expect(findings(schema, { frames: [{ path: "D:/Frames/a.jpg", timestamp: -1 }] })).not.toEqual([]);
   });
 
   it("shows each Node Type with an icon of the app's set", () => {
@@ -548,7 +579,7 @@ describe("TagImage", () => {
     expect(DEFAULT_TAG_BATCH_SIZE).toBe(4);
     expect(plugin.profile?.startup).toContain("tagBatchSize");
     for (const type of TAG_NODE_TYPES)
-      expect(plugin.nodeTypes?.[type]?.profile).toEqual(["modelDir", "tagBatchSize"]);
+      expect(plugin.nodeTypes?.[type]?.profile).toEqual(expect.arrayContaining(["modelDir", "tagBatchSize"]));
     for (const type of NODE_TYPES) expect(plugin.nodeTypes?.[type]?.profile).not.toContain("tagBatchSize");
     expect(pythonWorker().defaultTagBatchSize).toBe(DEFAULT_TAG_BATCH_SIZE);
   });
@@ -568,17 +599,38 @@ describe("TagFrames", () => {
     expect(frames?.pool?.variants).toEqual(plugin.nodeTypes?.TagImage?.pool?.variants);
   });
 
-  it("takes TagImage's settings and ClassifyFrames' input", () => {
-    expect(worker?.settingsSchema).toBe(plugin.workers?.tagImage?.settingsSchema);
+  it("takes TagImage's settings, where its answers go, and ClassifyFrames' input", () => {
+    const own = worker?.settingsSchema as { properties: Record<string, unknown> };
+    const tagImage = plugin.workers?.tagImage?.settingsSchema as { properties: Record<string, unknown> };
+    const classifyFrames = plugin.workers?.classifyFrames?.settingsSchema as {
+      properties: Record<string, unknown>;
+    };
+    expect(own.properties).toEqual({
+      ...tagImage.properties,
+      lists: classifyFrames.properties.lists,
+      output: classifyFrames.properties.output,
+      overwrite: classifyFrames.properties.overwrite,
+    });
     expect(worker?.inputSchema).toBe(plugin.workers?.classifyFrames?.inputSchema);
     const tagFramesFlowOf = (settings: Record<string, unknown>) => flowOf(settings, "TagFrames");
     expect(findingsOf(tagFramesFlowOf({}))).toEqual([]);
     expect(findingsOf(tagFramesFlowOf({ thresholds: { character: 0.5 }, maxTags: 10 }))).toEqual([]);
+    expect(findingsOf(tagFramesFlowOf({ lists: "file", output: "D:/Tags", overwrite: true }))).toEqual([]);
     expect(findingsOf(tagFramesFlowOf({ maxTags: 0 })).map((f) => f.rule)).toContain("FD-V33");
+    expect(findingsOf(tagFramesFlowOf({ lists: "both" })).map((f) => f.rule)).toContain("FD-V33");
   });
 
   it("hands on each frame's timestamp, tags and rating, its examples among what it hands on", () => {
-    expect(outputSchema.required).toEqual(expect.arrayContaining(["path", "tagger", "frames"]));
+    expect(outputSchema.required).toEqual(expect.arrayContaining(["tagger"]));
+    expect(
+      findings(outputSchema, {
+        path: "D:/Thumbnails/clip.jpg",
+        tagger: "wd-eva02-large",
+        file: "D:/Tags/clip.0123456789abcdef.json",
+        count: 64,
+        reused: false,
+      }),
+    ).toEqual([]);
     expect(outputSchema.examples.length).toBeGreaterThan(0);
     for (const example of outputSchema.examples) expect(findings(outputSchema, example)).toEqual([]);
     const rating = {
@@ -680,6 +732,17 @@ describe("the Plugin's data", () => {
 
   /** A model's folder in the data directory, at a commit the catalogue does not pin, as an earlier version left it. */
   const OLD = { ...(MODELS.anime_real as ModelFile), commit: "0123456789abcdef0123456789abcdef01234567" };
+
+  it("has an item for the frames' answers files once there are any", async () => {
+    dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));
+    mkdirSync(join(dataDir, RESULTS_FOLDER));
+
+    const data = await dataOf();
+
+    expect(RESULTS_FOLDER).toBe(pythonWorker().resultsFolder);
+    expect(data.items).toEqual([expect.objectContaining({ path: "results" })]);
+    expect(data.summary).toBe("Downloaded models and frames' answers");
+  });
 
   it("has no items without a models folder", async () => {
     dataDir = mkdtempSync(join(tmpdir(), "image-tags-"));

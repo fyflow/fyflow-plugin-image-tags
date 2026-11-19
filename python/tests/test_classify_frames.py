@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from image_tags import frames as frames_module
 from image_tags.worker import ClassifyFrames, ClassifyImage
 from tests.conftest import FIXTURES, IMAGES, Context, Task, run
 
@@ -193,14 +194,16 @@ def test_a_folder_with_no_images_fails(config, tmp_path):
         classify(config, folder)
 
 
-def test_a_folder_of_more_than_1000_images_fails(config, tmp_path):
+def test_a_folder_of_more_than_10000_images_fails(config, tmp_path, monkeypatch):
+    assert frames_module.MAX_FOLDER_IMAGES == 10_000
+    monkeypatch.setattr(frames_module, "MAX_FOLDER_IMAGES", 3)  # rather than writing 10001 images
     folder = tmp_path / "many"
     folder.mkdir()
     pixel = Image.new("RGB", (1, 1))
-    for i in range(1001):
+    for i in range(4):
         pixel.save(folder / f"{i:04}.png")
 
-    with pytest.raises(Exception, match=r"^The folder has more than 1000 images: .*many"):
+    with pytest.raises(Exception, match=r"^The folder has more than 3 images: .*many"):
         classify(config, folder)
 
 
@@ -265,3 +268,142 @@ def test_classify_image_scores_a_frame_sheet_as_one_image_with_a_warning(hub, co
     assert "frames" not in result
     assert len(result["warnings"]) == 1
     assert "ClassifyFrames" in result["warnings"][0]
+
+
+# A list of frames: each its own image, with its timestamp.
+
+
+def classify_list(config, frames, ctx=None, **settings):
+    return run(ClassifyFrames(config), Task({"frames": frames}, settings), ctx)
+
+
+def test_a_list_of_frames_is_classified_in_its_order_with_each_frame_s_timestamp_and_path(hub, config):
+    anime, tiny, sheet = str(IMAGES / ANIME), str(IMAGES / "tiny.jpg"), str(SHEETS / "sample.jpg")
+
+    result = classify_list(
+        config,
+        [{"path": tiny, "timestamp": 12.5}, {"path": anime, "timestamp": 0}, {"path": sheet}],
+        classifier="anime_classification",
+    )
+
+    assert "path" not in result
+    assert [(frame["path"], frame["timestamp"]) for frame in result["frames"]] == [
+        (tiny, 12.5),
+        (anime, 0.0),
+        (sheet, None),  # a frame sheet in a list is a plain image, as in a folder
+    ]
+    assert result["frames"][0]["scores"] == pytest.approx(GOLDEN["anime_classification"]["tiny.jpg"], abs=0.02)
+    assert result["frames"][1]["scores"] == pytest.approx(GOLDEN["anime_classification"][ANIME], abs=0.02)
+    assert "video" not in result
+    assert "warnings" not in result
+
+
+def test_a_folder_s_frames_name_their_files(hub, config, tmp_path):
+    folder = frames_folder(tmp_path, 2)
+
+    result = classify(config, folder, classifier="anime_real")
+
+    assert [frame["path"] for frame in result["frames"]] == [str(folder / "000.jpg"), str(folder / "001.jpg")]
+
+
+def test_a_sheet_s_and_an_image_s_frames_have_no_path_of_their_own(hub, config):
+    for path in (SHEETS / "sample.jpg", IMAGES / ANIME):
+        result = classify(config, path, classifier="anime_real")
+        assert all("path" not in frame for frame in result["frames"])
+
+
+@pytest.mark.parametrize(
+    ("frames", "message"),
+    [
+        ("D:/frames", r"^`frames` is not a list"),
+        ([], r"^`frames` is empty"),
+        (["D:/a.jpg"], r"^Frame 0 is not an object with a `path`"),
+        ([{"timestamp": 1}], r"^Frame 0 is not an object with a `path`"),
+        ([{"path": ""}], r"^Frame 0 is not an object with a `path`"),
+        ([{"path": str(IMAGES / ANIME)}, {"path": str(IMAGES / ANIME), "timestamp": -1}], r"^Frame 1's `timestamp`"),
+        ([{"path": str(IMAGES / ANIME), "timestamp": "1.5"}], r"^Frame 0's `timestamp` is not a number of 0 or more"),
+        ([{"path": str(IMAGES / ANIME), "timestamp": True}], r"^Frame 0's `timestamp`"),
+        ([{"path": str(IMAGES / ANIME), "timestamp": float("nan")}], r"^Frame 0's `timestamp`"),
+        ([{"path": str(IMAGES)}], r"^Frame 0 is not an image: .*images"),
+        ([{"path": str(IMAGES / "CREDITS.md")}], r"^Frame 0 is not an image: .*CREDITS\.md"),
+        ([{"path": str(IMAGES / "missing.jpg")}], r"^Frame 0 is not an image: .*missing\.jpg"),
+    ],
+)
+def test_a_list_that_is_not_one_of_frames_fails(config, frames, message):
+    with pytest.raises(Exception, match=message):
+        classify_list(config, frames)
+
+
+def test_a_list_of_more_than_10000_frames_fails(config):
+    frames = [{"path": str(IMAGES / "tiny.jpg")}] * 10_001
+
+    with pytest.raises(Exception, match=r"^`frames` has more than 10000 frames"):
+        classify_list(config, frames)
+
+
+@pytest.mark.parametrize(
+    ("input", "message"),
+    [
+        ({}, r"^The input has no `path` or `frames`: the frames to classify"),
+        ({"path": str(IMAGES / ANIME), "frames": [{"path": str(IMAGES / ANIME)}]}, r"^The input has both `path` and"),
+    ],
+)
+def test_an_input_needs_a_path_or_frames_not_both(config, input, message):
+    with pytest.raises(Exception, match=message):
+        run(ClassifyFrames(config), Task(input))
+
+
+# Thumbnails: one frame each, whose comment says where in which video it is.
+
+
+def thumbnail(folder, name, timestamp, video="D:/Videos/holiday.mp4", image=ANIME):
+    """A thumbnail as VideoThumbnail writes one: a JPEG of one frame, its JSON in the comment."""
+    meta = {"duration": 1621.12, "index": 7, "scene": 3, "timestamp": timestamp, "fingerprint": "fp1:test"}
+    if video is not None:
+        meta["video"] = video
+    path = folder / name
+    Image.open(IMAGES / image).convert("RGB").save(path, quality=95, comment=json.dumps(meta))
+    return path
+
+
+def test_a_thumbnail_alone_is_one_frame_with_its_timestamp_and_video(hub, config, tmp_path):
+    result = classify(config, thumbnail(tmp_path, "t.jpg", 141.17), classifier="anime_real")
+
+    assert result["frames"][0]["timestamp"] == 141.17
+    assert result["video"] == "D:/Videos/holiday.mp4"
+
+
+def test_a_folder_of_thumbnails_has_their_timestamps_and_their_one_video(hub, config, tmp_path):
+    thumbnail(tmp_path, "a.jpg", 141.17)
+    thumbnail(tmp_path, "b.jpg", 200, video=None)
+    (tmp_path / "c.jpg").write_bytes((IMAGES / "tiny.jpg").read_bytes())
+
+    result = classify(config, tmp_path, classifier="anime_real")
+
+    assert [frame["timestamp"] for frame in result["frames"]] == [141.17, 200.0, None]
+    assert result["video"] == "D:/Videos/holiday.mp4"
+
+
+def test_thumbnails_of_different_videos_name_no_video(hub, config, tmp_path):
+    thumbnail(tmp_path, "a.jpg", 1, video="D:/Videos/one.mp4")
+    thumbnail(tmp_path, "b.jpg", 2, video="D:/Videos/two.mp4")
+
+    result = classify(config, tmp_path, classifier="anime_real")
+
+    assert [frame["timestamp"] for frame in result["frames"]] == [1.0, 2.0]
+    assert "video" not in result
+
+
+def test_a_listed_timestamp_wins_over_the_thumbnail_s_own(hub, config, tmp_path):
+    a, b = thumbnail(tmp_path, "a.jpg", 141.17), thumbnail(tmp_path, "b.jpg", 9.5)
+
+    result = classify_list(config, [{"path": str(a), "timestamp": 5}, {"path": str(b)}], classifier="anime_real")
+
+    assert [frame["timestamp"] for frame in result["frames"]] == [5.0, 9.5]
+    assert result["video"] == "D:/Videos/holiday.mp4"
+
+
+def test_a_thumbnail_s_bad_timestamp_is_no_timestamp(hub, config, tmp_path):
+    result = classify(config, thumbnail(tmp_path, "t.jpg", "soon"), classifier="anime_real")
+
+    assert result["frames"][0]["timestamp"] is None

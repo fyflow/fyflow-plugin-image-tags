@@ -23,9 +23,18 @@ from .catalogue import (
     thresholds_of,
 )
 from .devices import device_of
-from .frames import SHEET_AS_ONE_IMAGE, SHEET_TAGGED_AS_ONE_IMAGE, Frames, read_frames, sheet_of
+from .frames import (
+    SHEET_AS_ONE_IMAGE,
+    SHEET_TAGGED_AS_ONE_IMAGE,
+    Frame,
+    Frames,
+    read_frame_list,
+    read_frames,
+    sheet_of,
+)
 from .models import Cancelled, Models
 from .preprocess import Preprocessing, open_image, to_input, to_rgb
+from .results import FileOptions, file_options, fits, key_of, name_of, reused, summary, target, write
 
 #: The most frames in one forward pass when the Profile sets no `batchSize`: a `ClassifyImage` batch, a
 #: `ClassifyFrames` Task's chunk.
@@ -108,16 +117,22 @@ def _read_image(path: str, ctx) -> tuple[Image.Image, dict | None]:
     return to_rgb(image), sheet_of(image)
 
 
-def _frames_result(path: str, source: Frames, fields: dict, warnings: list[str] | None = None) -> dict:
-    """A frames Task's result: the path it was given, the sheet's video when it names one, `fields`, then the
-    warnings of reading the frames and `warnings`, when there are any."""
-    result = {"path": path}
+def _frames_result(path: str | None, source: Frames, fields: dict, warnings: list[str] | None = None) -> dict:
+    """A frames Task's result: the path it was given (none for a `frames` list), the video the frames name when they
+    name one, `fields`, then the warnings of reading the frames and `warnings`, when there are any."""
+    result = {} if path is None else {"path": path}
     if source.video is not None:
         result["video"] = source.video
     result.update(fields)
     if every := [*source.warnings, *(warnings or [])]:
         result["warnings"] = every
     return result
+
+
+def _named(frame: Frame) -> dict:
+    """The start of a frame's own answer: its own image's path, for a folder's or a list's frame, then its
+    timestamp."""
+    return {"timestamp": frame.timestamp} if frame.path is None else {"path": frame.path, "timestamp": frame.timestamp}
 
 
 class _Worker:
@@ -130,6 +145,7 @@ class _Worker:
         # A Profile start-up field: `modelDir`, the folder of an offline machine's models (then nothing downloads).
         # On the GPU the process holds while it lives, when the variant's build has a GPU provider. The variant itself
         # (`host.variant`, since SDK 0.11) is only said on stderr: the providers are what the installed build offers.
+        self.data_dir = config["host"].get("dataDir")
         self.models = Models(
             config["host"]["dataDir"],
             model_dir=config.get("modelDir"),
@@ -143,6 +159,48 @@ class _Worker:
         if not isinstance(path, str) or path == "":
             raise ValueError(f"The input has no `path`: {self.what} to {self.verb}")
         return path
+
+    def _frames(self, task, ctx) -> tuple[str | None, Frames]:
+        """A frames Task's input, read: exactly one of `path` (a sheet, folder or image) and `frames` (a list of
+        `{path, timestamp?}`), with the path it was given, None for a list."""
+        input = task.input if isinstance(task.input, dict) else {}
+        has_path, has_list = input.get("path") is not None, input.get("frames") is not None
+        if has_path and has_list:
+            raise ValueError(f"The input has both `path` and `frames`: give one, {self.what} to {self.verb}")
+        if has_list:
+            return None, read_frame_list(input["frames"], ctx.allowed_path)
+        if not has_path:
+            raise ValueError(f"The input has no `path` or `frames`: {self.what} to {self.verb}")
+        path = self._path(task)
+        return path, read_frames(path, ctx.allowed_path)
+
+    def _hand_on(
+        self,
+        task,
+        ctx,
+        options: FileOptions | None,
+        path: str | None,
+        source: Frames,
+        settings: dict,
+        models: list,
+        make: Callable[[], dict],
+    ) -> dict:
+        """A frames Task's result: `make()`'s, or with `lists: "file"`, its summary once the whole is in a file. A file
+        written before for the same frames, settings and models is handed on instead, no model run, unless
+        `overwrite` is set (`results.py`)."""
+        if options is None:
+            return fits(make())
+        input = {key: task.input.get(key) for key in ("path", "frames")}
+        key = key_of(type(self).__name__, input, source.files, settings, models)
+        output_dir = (task.settings.get("profile") or {}).get("outputDir")
+        name = name_of(path, source.video, source.files)
+        file, named = target(options, output_dir, self.data_dir, name, key, ctx.allowed_path)
+        if named and not options.overwrite and (found := reused(file)) is not None:
+            ctx.progress(1.0, f"Reused the answers of {len(found['frames'])} frames")
+            return summary(found, file, True)
+        result = make()
+        write(file, result)
+        return summary(result, file, False)
 
     def teardown(self):
         """The Worker ends (its process is about to): its models' sessions go. The shim may call it twice."""
@@ -263,11 +321,26 @@ class ClassifyFrames(_Classify):
     frames agree with it (`agreement`), and each frame's own (`frames`). Its path must be in the Task's reach (Allowed
     roots), else the Task fails saying why; a folder's image outside it is skipped with a warning."""
 
+    what = "the frames"
+
     def run(self, task, ctx):
-        path = self._path(task)
         classifier = self._classifier(task)
         min_confidence = task.settings.get("minConfidence")
-        source = read_frames(path, ctx.allowed_path)
+        options = file_options(task.settings)
+        path, source = self._frames(task, ctx)
+        settings = {"classifier": classifier.id, "minConfidence": min_confidence}
+        return self._hand_on(
+            task,
+            ctx,
+            options,
+            path,
+            source,
+            settings,
+            list(classifier.models),
+            lambda: self._classify(classifier, min_confidence, path, source, ctx),
+        )
+
+    def _classify(self, classifier: Classifier, min_confidence, path: str | None, source: Frames, ctx) -> dict:
         # Each model's session first, so that loading it is said as such, then what the first batch does.
         for model in classifier.models:
             self.models.session(model, ctx)
@@ -285,7 +358,7 @@ class ClassifyFrames(_Classify):
         frames = []
         for frame, row in zip(source.frames, scores, strict=True):
             own = answer(classifier, row, min_confidence)
-            frames.append({"timestamp": frame.timestamp, "tag": own["tag"], "scores": own["scores"]})
+            frames.append({**_named(frame), "tag": own["tag"], "scores": own["scores"]})
 
         agreement = float(np.mean(scores.argmax(axis=1) == top))
         return _frames_result(path, source, {**overall, "agreement": agreement, "frames": frames})
@@ -388,10 +461,23 @@ class TagFrames(_Tag):
     what = "the frames"
 
     def run(self, task, ctx):
-        path = self._path(task)
         tagger = self._tagger(task)
         thresholds, max_tags = self._settings(task, tagger)
-        source = read_frames(path, ctx.allowed_path)
+        options = file_options(task.settings)
+        path, source = self._frames(task, ctx)
+        settings = {"tagger": tagger.id, "thresholds": thresholds, "maxTags": max_tags}
+        return self._hand_on(
+            task,
+            ctx,
+            options,
+            path,
+            source,
+            settings,
+            [tagger],
+            lambda: self._tag(tagger, thresholds, max_tags, path, source, ctx),
+        )
+
+    def _tag(self, tagger: Tagger, thresholds: dict, max_tags, path: str | None, source: Frames, ctx) -> dict:
         # The tag list and the session first, so that loading the model is said as such, then what the first batch
         # does.
         labels = self._ready(tagger, ctx)
@@ -404,5 +490,5 @@ class TagFrames(_Tag):
         frames = []
         for frame, row in zip(source.frames, rows, strict=True):
             own = tag(tagger, labels, row, thresholds, max_tags)
-            frames.append({"timestamp": frame.timestamp, "tags": own["tags"], "rating": own["rating"]})
+            frames.append({**_named(frame), "tags": own["tags"], "rating": own["rating"]})
         return _frames_result(path, source, {"tagger": tagger.id, "frames": frames}, self._warnings(tagger))
