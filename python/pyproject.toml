@@ -8,6 +8,8 @@ description = "The Python half of the image-tags Plugin: classifiers run with ON
 requires-python = ">=3.12,<3.15"
 dependencies = [
   "numpy>=2.1",
+  # Reads a tagger's graph to add its embedding output (`models.with_embedding`); the stand-in tagger is built with it.
+  "onnx>=1.17",
   "pillow>=11",
 ]
 
@@ -22,8 +24,7 @@ directml = ["onnxruntime-directml>=1.21"]
 
 [dependency-groups]
 # Not `dev`, which `uv sync` installs by default: the Host's environment gets none of it.
-# `onnx` builds the small stand-in tagger the tagging tests run, so they need no 1.26 GB download.
-test = ["onnx>=1.17", "pytest>=8"]
+test = ["pytest>=8"]
 
 [tool.uv]
 conflicts = [[{ extra = "cpu" }, { extra = "cuda" }, { extra = "directml" }]]

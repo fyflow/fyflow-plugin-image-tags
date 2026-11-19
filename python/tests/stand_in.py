@@ -2,6 +2,9 @@
 and output (`input` `[b, 448, 448, 3]` 0-255, `output` `[b, tags]` already sigmoided), its scores a fixed linear map of
 the image's mean colour, and a tag list in `selected_tags.csv`'s format. Its catalogue entry is `wd-eva02-large`'s,
 the files and their sha256 swapped.
+
+Like the real taggers, it has a head: a `Gemm` named as `wd-eva02-large`'s, after a feature node, so its embedding
+(the head's input, `FEATURES` wide) can be had as theirs is.
 """
 
 import hashlib
@@ -28,21 +31,47 @@ TAG_LIST = """tag_id,name,category,count
 6,kagamine_rin,4,100
 """
 TAGS = 10
+#: The width of its embedding: the head's input.
+FEATURES = 8
+#: Its feature node, before the head.
+FEATURE_NODE = "/features/MatMul"
 
 
-def model_bytes(seed: int = 0, output: str = "output") -> bytes:
+def model_bytes(seed: int = 0, output: str = "output", fp16: bool = False) -> bytes:
     """The graph: each image's mean colour (BGR, scaled to [0, 1]) times fixed weights, plus a bias, sigmoided, as
-    `output`."""
+    `output`.
+
+    The weights are split in two: a feature node takes the colour to `FEATURES` features (the colour itself, then
+    mixes of it), and the head, a `Gemm` named as `wd-eva02-large`'s, weighs the colour's three and nothing of the
+    others, so the scores are those of the colour alone. With `fp16`, the head runs in float16, its Sigmoid's output
+    cast back to float32, as `pixai-fp16`'s does.
+    """
     rng = np.random.default_rng(seed)
     weights = rng.normal(0, 4, (3, TAGS)).astype(np.float32)
     bias = rng.normal(0, 1, TAGS).astype(np.float32)
+    project = np.concatenate([np.eye(3), rng.normal(0, 1, (3, FEATURES - 3))], axis=1).astype(np.float32)
+    head = np.concatenate([weights.T, np.zeros((TAGS, FEATURES - 3))], axis=1).astype(np.float32)
+    half = TensorProto.FLOAT16 if fp16 else TensorProto.FLOAT
     nodes = [
         helper.make_node("ReduceMean", ["input"], ["means"], axes=[1, 2], keepdims=0),
         helper.make_node("Div", ["means", "scale"], ["scaled"]),
-        helper.make_node("MatMul", ["scaled", "weights"], ["product"]),
-        helper.make_node("Add", ["product", "bias"], ["logits"]),
-        helper.make_node("Sigmoid", ["logits"], [output]),
+        helper.make_node("MatMul", ["scaled", "project"], ["features"], name=FEATURE_NODE),
     ]
+    if fp16:
+        nodes.append(helper.make_node("Cast", ["features"], ["features_fp16"], to=half))
+    nodes += [
+        helper.make_node(
+            "Gemm",
+            ["features_fp16" if fp16 else "features", "head_weight", "head_bias"],
+            ["logits"],
+            name=WD_EVA02_LARGE.head_node,
+            transB=1,
+        ),
+        helper.make_node("Sigmoid", ["logits"], ["sigmoid" if fp16 else output]),
+    ]
+    if fp16:
+        nodes.append(helper.make_node("Cast", ["sigmoid"], [output], to=TensorProto.FLOAT))
+    dtype = np.float16 if fp16 else np.float32
     graph = helper.make_graph(
         nodes,
         "stand-in tagger",
@@ -50,8 +79,9 @@ def model_bytes(seed: int = 0, output: str = "output") -> bytes:
         [helper.make_tensor_value_info(output, TensorProto.FLOAT, ["batch", TAGS])],
         initializer=[
             numpy_helper.from_array(np.array(255, dtype=np.float32), "scale"),
-            numpy_helper.from_array(weights, "weights"),
-            numpy_helper.from_array(bias, "bias"),
+            numpy_helper.from_array(project, "project"),
+            numpy_helper.from_array(head.astype(dtype), "head_weight"),
+            numpy_helper.from_array(bias.astype(dtype), "head_bias"),
         ],
     )
     model = helper.make_model(graph, opset_imports=[helper.make_opsetid("", 13)])
@@ -59,11 +89,12 @@ def model_bytes(seed: int = 0, output: str = "output") -> bytes:
     return model.SerializeToString()
 
 
-def make(folder: Path, **entry) -> Tagger:
+def make(folder: Path, fp16: bool = False, **entry) -> Tagger:
     """Writes the stand-in's files into `folder` (`model.onnx`, `selected_tags.csv`) and gives its catalogue entry,
-    with what `entry` changes of it (its graph's output named as `entry`'s `output`, when it gives one)."""
+    with what `entry` changes of it (its graph's output named as `entry`'s `output`, when it gives one; its head stays
+    named as `wd-eva02-large`'s whatever `head_node` says). With `fp16`, its head runs in float16 (`model_bytes`)."""
     folder.mkdir(parents=True, exist_ok=True)
-    model, tags = model_bytes(output=entry.get("output", "output")), TAG_LIST.encode()
+    model, tags = model_bytes(output=entry.get("output", "output"), fp16=fp16), TAG_LIST.encode()
     (folder / "model.onnx").write_bytes(model)
     (folder / "selected_tags.csv").write_bytes(tags)
     return replace(

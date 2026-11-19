@@ -13,6 +13,9 @@ more.
 
 With a model folder (the Profile's `modelDir`), for a machine without internet, nothing is ever downloaded: the models
 must be there already, in the same layout.
+
+A tagger has a second session too, for what needs each image's embedding beside its scores: the same graph with a
+second output, `embedding`, made in memory from the model's file the first time it is asked for.
 """
 
 import gc
@@ -28,7 +31,9 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import numpy as np
+import onnx
 import onnxruntime as ort
+from onnx import TensorProto, helper
 
 from . import devices
 from .catalogue import Labels, Model, Pinned, Tagger, labels_from_csv
@@ -40,6 +45,11 @@ CHUNK_BYTES = 64 * 1024
 TIMEOUT_SECONDS = 60
 #: How often a Task waiting on a download reports its progress and looks for its own Cancel.
 POLL_SECONDS = 0.1
+#: The output a tagger's embedding session adds: each image's embedding, `[batch, d]` float32.
+EMBEDDING = "embedding"
+#: What may lie between a tagger's head and its output: a bias, a Sigmoid, a cast to float32.
+_AFTER_THE_HEAD = ("Sigmoid", "Add", "Cast")
+_HEADS = ("Gemm", "MatMul")
 
 
 class ModelUnavailable(Exception):
@@ -56,6 +66,16 @@ class OutOfGpuMemory(Exception):
 
     def __init__(self, model: Model | Tagger):
         super().__init__(f"{model.id} needs more GPU memory than this GPU has: {model.out_of_gpu_memory}")
+
+
+class GraphChanged(Exception):
+    """A tagger's graph is not what its catalogue entry says of it: its embedding cannot be found."""
+
+    def __init__(self, tagger: Tagger, reason: str):
+        super().__init__(
+            f"The graph of the tagger {tagger.id} changed: {reason}. Its catalogue entry's `head_node` must name the "
+            "Gemm (or MatMul) that gives its scores, its data input `[batch, d]`"
+        )
 
 
 class Cancelled(Exception):
@@ -234,6 +254,8 @@ class Models:
         self.root = self.model_dir or Path(data_dir) / "models"
         self.endpoint = (endpoint or os.environ.get("HF_ENDPOINT") or DEFAULT_ENDPOINT).rstrip("/")
         self._sessions: dict[str, ort.InferenceSession] = {}
+        #: The taggers' sessions with their `embedding` output, kept apart from the plain ones.
+        self._embedding_sessions: dict[str, ort.InferenceSession] = {}
         self._labels: dict[str, Labels] = {}
         self._session_lock = threading.Lock()
         # One forward pass at a time in the process: the DirectML provider takes no concurrent `run` on a session, and
@@ -255,33 +277,43 @@ class Models:
             labels = self._labels[tagger.id] = labels_from_csv(path.read_text(encoding="utf-8"))
         return labels
 
-    def runs_on_cpu(self, model: Model | Tagger) -> bool:
-        """Whether the model's session, once made, runs on the CPU: no GPU provider, or one that could not start."""
-        return self.session(model).get_providers()[0] == devices.CPU
+    def runs_on_cpu(self, model: Model | Tagger, embedding: bool = False) -> bool:
+        """Whether the model's session (its embedding session, with `embedding`), once made, runs on the CPU: no GPU
+        provider, or one that could not start."""
+        return self.session(model, embedding=embedding).get_providers()[0] == devices.CPU
 
-    def session(self, model: Model | Tagger, ctx=None) -> ort.InferenceSession:
+    def session(self, model: Model | Tagger, ctx=None, embedding: bool = False) -> ort.InferenceSession:
         """The model's inference session, made on first use, once the model's file is there: downloaded if need be,
         with progress and Cancel through the Task's `ctx` (`None` for a caller without a Task), which is also told when
-        the session is being made, and where."""
-        session = self._sessions.get(model.id)
+        the session is being made, and where.
+
+        With `embedding`, a tagger's other session, kept beside the plain one: its graph has a second output,
+        `embedding`, each image's `[batch, d]` float32 embedding (see `with_embedding`). It is made in memory, and
+        nothing is written to disk."""
+        if embedding and not isinstance(model, Tagger):
+            raise ValueError(f"{model.id} is not a tagger: only a tagger's session gives an embedding")
+        sessions = self._embedding_sessions if embedding else self._sessions
+        session = sessions.get(model.id)
         if session is not None:
             return session
         path = self._file(model, ctx)
         with self._session_lock:
-            session = self._sessions.get(model.id)
+            session = sessions.get(model.id)
             if session is None:
                 chosen = devices.providers(ort.get_available_providers(), self.device)
                 if ctx is not None:
                     ctx.progress(0.0, f"Loading the model {model.id} on {devices.name_of(chosen)}")
+                graph = with_embedding(model, path) if embedding else str(path)
                 devices.prepare(chosen)
                 with _out_of_gpu_memory_said(model, chosen[0][0]):
                     session = ort.InferenceSession(
-                        str(path),
+                        graph,
                         devices.session_options(chosen, self.threads),
                         providers=[name for name, _ in chosen],
                         provider_options=[options for _, options in chosen],
                     )
-                self._sessions[model.id] = session
+                del graph
+                sessions[model.id] = session
                 _say_where(model, session, chosen, self.device, self.variant)
             return session
 
@@ -293,12 +325,23 @@ class Models:
             (output,) = session.run([model.output], {"input": batch})
         return output
 
+    def scores_and_embeddings(self, tagger: Tagger, batch: np.ndarray, ctx=None) -> tuple[np.ndarray, np.ndarray]:
+        """Each image's scores, `[n, tags]`, as `scores` gives them, and its embedding, `[n, d]` float32, from one
+        forward pass of the tagger's embedding session."""
+        session = self.session(tagger, ctx, embedding=True)
+        with self._run_lock, _out_of_gpu_memory_said(tagger, session.get_providers()[0]):
+            scores, embeddings = session.run([tagger.output, EMBEDDING], {"input": batch})
+        if embeddings.ndim != 2 or embeddings.shape[0] != len(batch):
+            raise GraphChanged(tagger, f"its embedding is {list(embeddings.shape)} for {len(batch)} images")
+        return scores, embeddings
+
     def close(self) -> None:
         """Drops every session, and with it its memory, on the GPU too: what a Worker ending does. A session asked for
         afterwards is made again; closing twice does nothing more. A forward pass running meanwhile keeps its session
         until it ends."""
         with self._session_lock:
             self._sessions.clear()
+            self._embedding_sessions.clear()
         gc.collect()
 
     def _file(self, model: Pinned, ctx) -> Path:
@@ -328,6 +371,72 @@ class Models:
         # Under the lock. An abandoned download may end after a new one has taken its place.
         if self._downloads.get(model.local_path) is fetching:
             del self._downloads[model.local_path]
+
+
+def with_embedding(tagger: Tagger, path: Path) -> bytes:
+    """The tagger's graph, from its model's file at `path`, with a second output, `embedding`: the data input of its
+    head (`Tagger.head_node`), each image's pooled features, `[batch, d]`, cast to float32 when the graph has it in
+    float16. Its scores stay as they were.
+
+    The head is checked by walking back from the scores' output through `Sigmoid`, `Add` and `Cast` to the first `Gemm`
+    or `MatMul`: a head missing, another node than that, or an input that is not `[batch, d]`, is `GraphChanged`. The
+    graph comes back serialized, for `ort.InferenceSession` to take as it is: every tagger is under protobuf's 2 GB.
+    """
+    model = onnx.load(str(path))
+    graph = model.graph
+    producers = {output: node for node in graph.node for output in node.output}
+    weights = {initializer.name: initializer for initializer in graph.initializer}
+
+    head = next((node for node in graph.node if node.name == tagger.head_node), None)
+    if head is None:
+        raise GraphChanged(tagger, f"it has no node `{tagger.head_node}`")
+    found = _head_before(producers, weights, tagger.output)
+    if found is not head:
+        named = "nothing" if found is None else f"`{found.name}` ({found.op_type})"
+        raise GraphChanged(tagger, f"its scores come from {named}, not `{tagger.head_node}`")
+
+    features, weight = head.input[0], weights.get(head.input[1])
+    if weight is None or len(weight.dims) != 2:
+        raise GraphChanged(tagger, f"`{head.name}`'s weight is not a matrix of the graph's")
+    attributes = {attribute.name: helper.get_attribute_value(attribute) for attribute in head.attribute}
+    if head.op_type == "Gemm":
+        # A Gemm's inputs are matrices: its data input is `[batch, d]` unless it is transposed.
+        if attributes.get("transA", 0):
+            raise GraphChanged(tagger, f"`{head.name}` takes its input transposed, `[d, batch]`")
+        width = weight.dims[1] if attributes.get("transB", 0) else weight.dims[0]
+    else:
+        width = weight.dims[0]
+    known = {info.name: info for info in [*graph.value_info, *graph.input, *graph.output]}.get(features)
+    shape = known.type.tensor_type.shape if known is not None and known.type.tensor_type.HasField("shape") else None
+    if shape is not None:
+        if len(shape.dim) != 2:
+            raise GraphChanged(tagger, f"`{head.name}`'s input `{features}` has {len(shape.dim)} dimensions, not 2")
+        given = shape.dim[1].dim_value if shape.dim[1].HasField("dim_value") else width
+        if given != width:
+            raise GraphChanged(tagger, f"`{head.name}`'s input `{features}` is {given} wide, not {width}")
+    elif head.op_type != "Gemm":
+        raise GraphChanged(tagger, f"the shape of `{head.name}`'s input `{features}` is not in the graph")
+
+    # The input's type is the weight's: an operator's inputs share theirs.
+    embedding = features
+    if weight.data_type == TensorProto.FLOAT16:
+        embedding = f"{features}/{EMBEDDING}_float32"
+        graph.node.append(helper.make_node("Cast", [features], [embedding], to=TensorProto.FLOAT, name=embedding))
+    elif weight.data_type != TensorProto.FLOAT:
+        raise GraphChanged(tagger, f"`{head.name}`'s input is {TensorProto.DataType.Name(weight.data_type)}")
+    graph.node.append(helper.make_node("Identity", [embedding], [EMBEDDING], name=EMBEDDING))
+    graph.output.append(helper.make_tensor_value_info(EMBEDDING, TensorProto.FLOAT, ["batch", width]))
+    return model.SerializeToString()
+
+
+def _head_before(producers: dict, weights: dict, output: str):
+    """The `Gemm` or `MatMul` the scores' `output` comes from through `Sigmoid`, `Add` and `Cast` only; `None` when
+    another node comes first."""
+    node = producers.get(output)
+    while node is not None and node.op_type in _AFTER_THE_HEAD:
+        # An Add's other input is its bias, a weight of the graph.
+        node = next((producers[name] for name in node.input if name in producers and name not in weights), None)
+    return node if node is not None and node.op_type in _HEADS else None
 
 
 @contextmanager

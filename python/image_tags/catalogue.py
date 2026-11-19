@@ -272,6 +272,9 @@ class Tagger(Pinned):
     rating_code: int | None
     #: Whether the output is a probability per tag already; else a logit, sigmoided here.
     sigmoided: bool
+    #: The name of the graph's last `Gemm`, which turns the image's pooled features into the scores: its data input is
+    #: the image's embedding (`Models.session(..., embedding=True)`).
+    head_node: str
     file: str = "model.onnx"
     tags_file: str = "selected_tags.csv"
     #: Both files are at the repo's top.
@@ -326,6 +329,8 @@ WD_EVA02_LARGE = Tagger(
     categories=(Category("general", 0, 0.35), Category("character", 4, 0.85)),
     rating_code=9,
     sigmoided=True,
+    # Its input is `/core_model/fc_norm/LayerNormalization_output_0`, `[batch, 1024]`; then `/final_act/Sigmoid`.
+    head_node="/core_model/head/Gemm",
 )
 
 #: PixAI v1.0, by its authors (`pixai-labs/pixai-tagger-v1.0` at `9fe10addf9326e292da8a85a98ea74cd91b41771`), who
@@ -363,6 +368,9 @@ PIXAI = Tagger(
     rating_code=9,
     # The conversion ends in a Sigmoid.
     sigmoided=True,
+    # Its input is `/head_pool/If_output_0`, `[batch, 1024]`: float32 here, float16 in the fp16 file, whose Sigmoid is
+    # cast to float32 after.
+    head_node="/head/Gemm",
     output="prediction",
     rating_names=(
         ("rating:g", "general"),

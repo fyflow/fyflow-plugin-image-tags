@@ -291,7 +291,7 @@ def config(data_dir):
 @pytest.fixture
 def stand_in(tmp_path, monkeypatch):
     """The stand-in tagger (`stand_in.py`), in the catalogue for the test, its files in `tmp_path / "stand-in"`."""
-    from tests import stand_in as module  # `onnx` builds it: a test dependency only
+    from tests import stand_in as module
 
     tagger = module.make(tmp_path / "stand-in")
     monkeypatch.setitem(TAGGERS, tagger.id, tagger)
