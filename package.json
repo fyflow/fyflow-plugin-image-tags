@@ -2,7 +2,7 @@
   "name": "fyflow-plugin-image-tags",
   "version": "0.4.0",
   "private": true,
-  "description": "A fyflow-app Plugin: classify images and video frame sheets with small local ONNX models",
+  "description": "A fyflow-app Plugin: classify and tag images and video frame sheets with small local ONNX models",
   "keywords": [
     "fyflow",
     "fyflow-plugin",

@@ -6,17 +6,28 @@
 
 **Blocked by:** 18, 19, 21, 22, 23, 24
 
-**Status:** blocked (waits for TagScenes; then `pnpm check` and `pnpm test:models` again, and tag, push and index PR wait for the user)
+**Status:** resolved
 
 - [x] Version 0.4.0 in `package.json`, `plugin.ts` and `python/pyproject.toml`, then `uv lock`. It is a minor version
   because the frames output schemas no longer require `frames` (or `path`).
 - [x] `pnpm check` passes, with 377 pytest (slow included) and 78 vitest.
 - [x] Again with TagScenes (2026-11-20): `pnpm check` with 435 pytest and 87 vitest, and `pnpm test:models` with 35
   (19 minutes on the CPU).
-- [ ] Push `main` and the tag `fyflow-ext.image-tags@0.4.0`. The Release workflow then builds
+- [x] Push `main` and the tag `fyflow-ext.image-tags@0.4.0`. The Release workflow then builds
   `fyflow-plugin-image-tags-0.4.0.tgz`.
-- [ ] Open the index PR to fyflow-plugins once the asset exists, with the user's approval. The SDK range is unchanged from 0.3.0;
+- [x] Open the index PR to fyflow-plugins once the asset exists, with the user's approval. The SDK range is unchanged from 0.3.0;
   the Node Types gain `TagScenes`.
+
+## Changed while building it (2026-11-20)
+
+- **Index PR:** fyflow/fyflow-plugins#15, made with the release CLI (`merge`, then `apply`) from the Release run's pack
+  result; `check-pr.ts` passed locally. The CLI took the index description from `package.json`, which still said
+  "classify images"; the PR keeps the index's "classify and tag", and `package.json` now says it too.
+- **CI on Linux** had failed since 0.3.0, though `pnpm check` passed on Windows. onnxruntime's CPU kernels there
+  score and embed an image a little differently by its place in a batch. Two fixes after the tag, on `main` for the
+  next release: a pair within 1e-3 z-units of TagScenes' link threshold links (identical frames no longer cut a
+  scene where the threshold falls on their tie; the reviewed videos group as before), and the sheet-cell test tags
+  one frame a pass. The 0.4.0 tarball lacks the first; it only matters for identical frames.
 
 ## What is new in 0.4.0
 
