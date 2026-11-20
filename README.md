@@ -202,6 +202,8 @@ Settings:
 | `ignoreTags` | none | tags to leave out everywhere: comparing frames, scenes' and the summary's tags, highlights, frames' own tags |
 | `minCoverage` | 0.3 | a scene lists a tag when it is on for this share of the scene's time |
 | `includeTags` | `true` | hand on each scene's tags and highlights, and the summary's tags; `false` leaves a scene its times, frames, rating and keyframe |
+| `keyframeTags` | none | tag → weight, steering each scene's keyframe toward frames with these tags (positive) or away from them (negative), e.g. `{ "smile": 1, "blurry": -1, "rating:explicit": -2 }`; a rating is keyed `rating:<label>`. A tag the tagger lacks, or one `ignoreTags` drops, is left out with a warning |
+| `keyframeShare` | 0.5 | with `keyframeTags`, the share of a scene's frames, the most typical first, that may be its keyframe; 1 lets every frame compete |
 | `includeFrames` | `false` | also hand on each frame's own tags and rating. Off, no frame's own tags appear anywhere, in the result or a file |
 | `lists`, `output`, `overwrite` | `result` | as [Answers in a file](#answers-in-a-file): `scenes` and `frames` go to the file |
 
@@ -211,7 +213,9 @@ It hands on `{ path?, video?, tagger, frameCount, duration, threshold, summary, 
   highlights }`. `frames` are the scene's frames as places in the input (the folder's order by name, or the sheet's
   or list's), as is every `frame` below. `boundary.link` is the strongest similarity across the cut before it (none
   on the first scene; null when no two frames across it were compared). `keyframe` is `{ frame, timestamp, path? }`,
-  the frame most like the scene as a whole (`path` is its image, none for a sheet's frame).
+  the frame most like the scene as a whole (`path` is its image, none for a sheet's frame). With `keyframeTags`, it
+  is the frame among the `keyframeShare` most typical whose tags weigh the most (scores smoothed over nearby frames);
+  ties, and scenes where none of those frames has a weighted tag, keep the most typical frame.
 - A scene's `tags` are `[{ name, category, coverage, score }]`, by coverage then score: `coverage` the share of the
   scene's time the tag is on, `score` its mean while on. Its `highlights` are short-lived tags not among them, each
   `{ name, category, score, frames, frame, timestamp, path? }` at the frame where it peaks: a general tag reaching 0.7

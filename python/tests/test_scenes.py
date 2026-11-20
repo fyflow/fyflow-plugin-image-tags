@@ -1,6 +1,8 @@
 """Grouping a video's frames into scenes and pooling their tags (`scenes.py`), on planted videos: arrays made up with
 a seeded random generator, no model and no image."""
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -457,3 +459,121 @@ def test_sparse_scores_stack_by_batch():
     assert sorted(zip(row.tolist(), tag.tolist())) == sorted(
         [(0, int(t)) for t in np.flatnonzero(dense[4] >= 0.5)] + [(1, int(t)) for t in np.flatnonzero(dense[1] >= 0.5)]
     )
+
+
+# The keyframe and `keyframeTags`.
+
+KEYFRAME_SCENE = Settings(min_scene_duration=60)
+
+
+def typical_scene(**settings):
+    """A 40 s scene of one camera, its 20 frames grouped as one; and its frames from the most typical to the least,
+    as `_keyframe` ranks them."""
+    frames, _ = planted([(40, "A")])
+    grouping = group(frames, KEYFRAME_SCENE)
+    [members] = grouping.scenes
+    emb = np.asarray(frames.embeddings, dtype=np.float64)
+    unit_ = (emb[members] - grouping.centre) / grouping.radius[members, None]
+    span = grouping.end - grouping.start
+    typical = unit_ @ (span[members] @ unit_)
+    return frames, grouping, [int(members[i]) for i in np.argsort(-typical, kind="stable")]
+
+
+def with_scores(frames, **scores):
+    """`frames` with each `name: {frame: score}` of `scores` set (a rating's name, `rating:<label>`)."""
+    row, tag, value = frames.scores.entries(np.arange(len(frames)))
+    dense = np.zeros((len(frames), len(frames.names)), dtype=np.float32)
+    dense[row, tag] = value
+    ratings = np.array(frames.ratings, copy=True)
+    for name, at in scores.items():
+        for frame, score in at.items():
+            if name.startswith(scenes.RATING_KEY):
+                ratings[frame, list(RATINGS).index(name.removeprefix(scenes.RATING_KEY))] = score
+            else:
+                dense[frame, list(frames.names).index(name)] = score
+    return replace(frames, scores=Scores.from_dense(dense), ratings=ratings)
+
+
+def keyframe_of(frames, grouping, **settings):
+    [scene] = pool(frames, grouping, replace(KEYFRAME_SCENE, **settings))["scenes"]
+    return scene["keyframe"]["frame"]
+
+
+@pytest.mark.parametrize("share", [0.1, 0.5, 1.0])
+def test_without_keyframe_tags_the_keyframe_is_the_most_typical_frame_at_any_share(share):
+    frames, grouping, typical = typical_scene()
+
+    assert keyframe_of(frames, grouping, keyframe_share=share) == typical[0]
+
+
+def test_a_weighted_tag_picks_a_typical_frame_with_it():
+    frames, grouping, typical = typical_scene()
+    frames = with_scores(frames, person_1={typical[1]: 0.9})
+
+    assert keyframe_of(frames, grouping, keyframe_tags={"person_1": 1.0}) == typical[1]
+
+
+def test_a_frame_with_the_tag_outside_the_typical_share_wins_only_once_the_share_takes_it_in():
+    frames, grouping, typical = typical_scene()
+    frames = with_scores(frames, person_1={typical[-1]: 0.9})
+
+    assert keyframe_of(frames, grouping, keyframe_tags={"person_1": 1.0}) != typical[-1]
+    assert keyframe_of(frames, grouping, keyframe_tags={"person_1": 1.0}, keyframe_share=1.0) == typical[-1]
+
+
+def test_a_negative_weight_steers_away_from_the_most_typical_frame():
+    frames, grouping, typical = typical_scene()
+    frames = with_scores(frames, person_1={typical[0]: 0.9})
+
+    found = keyframe_of(frames, grouping, keyframe_tags={"person_1": -1.0})
+
+    assert found != typical[0]
+    assert found in typical[:10]
+
+
+def test_a_rating_is_weighted_by_its_rating_key():
+    frames, grouping, typical = typical_scene()
+    frames = with_scores(frames, **{"rating:explicit": {typical[2]: 0.95}})
+
+    assert keyframe_of(frames, grouping, keyframe_tags={"rating:explicit": 1.0}) == typical[2]
+
+
+def test_with_no_candidate_having_a_weighted_tag_the_keyframe_is_the_most_typical_frame():
+    frames, grouping, typical = typical_scene()
+
+    assert keyframe_of(frames, grouping, keyframe_tags={"person_3": 1.0, "missing": 2.0}) == typical[0]
+
+
+def test_an_ignored_tag_weighs_nothing():
+    frames, grouping, typical = typical_scene()
+    frames = with_scores(frames, person_1={typical[1]: 0.9})
+
+    found = keyframe_of(frames, grouping, keyframe_tags={"person_1": 1.0}, ignore_tags=frozenset({"person_1"}))
+
+    assert found == typical[0]
+
+
+def test_keyframe_weights_place_tags_and_ratings_and_name_what_is_left_out():
+    frames, _ = planted([(10, "A")])
+    settings = Settings(
+        keyframe_tags={"close-up": 0.5, "rating:explicit": -2, "explicit": 1, "missing": 1, "person_0": 1},
+        ignore_tags=frozenset({"person_0"}),
+    )
+
+    weights = scenes.keyframe_weights(frames, settings)
+
+    assert [frames.names[i] for i in weights.tags] == ["close-up"]
+    assert weights.tag_weights.tolist() == [0.5]
+    assert weights.ratings.tolist() == [3]
+    assert weights.rating_weights.tolist() == [-2.0]
+    # A rating's own name is no tag: only `rating:<label>` weighs it.
+    assert weights.left_out == ("explicit", "missing", "person_0")
+    assert not scenes.keyframe_weights(frames, Settings())
+
+
+def test_an_all_blank_scene_s_keyframe_is_its_middle_frame_whatever_is_weighted():
+    frames, _ = planted([(30, "_")])
+
+    result = pool(frames, group(frames), Settings(keyframe_tags={"place_0": 1.0}))
+
+    assert result["scenes"][0]["keyframe"]["frame"] == 7

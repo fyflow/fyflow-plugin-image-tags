@@ -157,7 +157,8 @@ const pythonWorker = () => {
           "'defaultBatchSize': w.DEFAULT_BATCH_SIZE, 'defaultTagBatchSize': w.DEFAULT_TAG_BATCH_SIZE, " +
           "'resultsFolder': r.RESULTS_FOLDER, 'sceneMaxTags': w.SCENE_MAX_TAGS, 'sceneDefaults': " +
           "{'embeddingWeight': d.embedding_weight, 'minSceneDuration': d.min_scene_duration, " +
-          "'minCoverage': d.min_coverage, 'includeTags': d.include_tags, 'includeFrames': False}}))",
+          "'minCoverage': d.min_coverage, 'includeTags': d.include_tags, 'keyframeShare': d.keyframe_share, " +
+          "'includeFrames': False}}))",
       ],
       { cwd: project, encoding: "utf8" },
     ),
@@ -707,6 +708,8 @@ describe("TagScenes", () => {
       "ignoreTags",
       "minCoverage",
       "includeTags",
+      "keyframeTags",
+      "keyframeShare",
       "includeFrames",
       "lists",
       "output",
@@ -730,6 +733,8 @@ describe("TagScenes", () => {
           ignoreTags: ["simple_background"],
           minCoverage: 1,
           includeTags: false,
+          keyframeTags: { smile: 1, "rating:explicit": -2 },
+          keyframeShare: 1,
           includeFrames: true,
           lists: "file",
           output: "D:/Scenes",
@@ -746,6 +751,9 @@ describe("TagScenes", () => {
       { ignoreTags: [""] },
       { includeTags: "no" },
       { includeFrames: 1 },
+      { keyframeTags: ["smile"] },
+      { keyframeShare: -0.5 },
+      { keyframeShare: 1.5 },
       { maxTags: 0 },
       { lists: "both" },
       { sceneCount: 3 },
@@ -757,7 +765,7 @@ describe("TagScenes", () => {
     expect(pythonWorker().sceneMaxTags).toBe(SCENE_MAX_TAGS);
     expect(pythonWorker().sceneDefaults).toEqual(SCENE_DEFAULTS);
     expect(settingsSchema.properties.maxTags?.description).toContain(`left empty, ${SCENE_MAX_TAGS}`);
-    for (const key of ["embeddingWeight", "minSceneDuration", "minCoverage"] as const)
+    for (const key of ["embeddingWeight", "minSceneDuration", "minCoverage", "keyframeShare"] as const)
       expect(settingsSchema.properties[key]?.description).toContain(`left empty, ${SCENE_DEFAULTS[key]}`);
     expect(settingsSchema.properties.includeTags?.description).toContain("Left empty, true");
     expect(settingsSchema.properties.includeFrames?.description).toContain("Left empty, false");

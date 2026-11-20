@@ -1,6 +1,7 @@
 """The Plugin's Python Workers, as the Host builds them: one instance per Python process, `run` once per Task."""
 
 import asyncio
+import math
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -55,6 +56,14 @@ TASKS_AT_ONCE = 32
 #: The most `TagImage` Tasks a process runs at once, when the Host does not say: its pool's `maxConcurrentTasks` in
 #: `plugin.ts`. Enough to keep a few batches lined up.
 TAG_TASKS_AT_ONCE = 16
+
+
+def keyframe_tags_left_out(tagger: Tagger, names) -> str:
+    """The warning of a `TagScenes` result whose `keyframeTags` names tags it could not weigh."""
+    return (
+        f"keyframeTags names tags left out of choosing keyframes, since {tagger.id} has no such tag or ignoreTags "
+        f"drops it: {', '.join(names)}"
+    )
 
 
 def ran_on_the_cpu(tagger: Tagger) -> str:
@@ -617,6 +626,8 @@ class TagScenes(_Tag):
             "ignoreTags": sorted(grouping.ignore_tags),
             "minCoverage": grouping.min_coverage,
             "includeTags": grouping.include_tags,
+            "keyframeTags": dict(grouping.keyframe_tags),
+            "keyframeShare": grouping.keyframe_share,
             "includeFrames": include_frames,
             "constants": {
                 **{name: getattr(scenes, name) for name in SCENE_CONSTANTS},
@@ -648,6 +659,21 @@ class TagScenes(_Tag):
         ignore = settings.get("ignoreTags") or []
         if not isinstance(ignore, list) or not all(isinstance(name, str) and name for name in ignore):
             raise ValueError(f"`ignoreTags` is not a list of tags: {ignore!r}")
+        weights = settings.get("keyframeTags") or {}
+        if not isinstance(weights, dict) or not all(
+            isinstance(name, str)
+            and name
+            and not isinstance(weight, bool)
+            and isinstance(weight, int | float)
+            and math.isfinite(weight)
+            for name, weight in weights.items()
+        ):
+            raise ValueError(f"`keyframeTags` is not a map of tags to numbers (weights): {weights!r}")
+        share = settings.get("keyframeShare")
+        if share is None:
+            share = defaults.keyframe_share
+        elif isinstance(share, bool) or not isinstance(share, int | float) or not 0 < share <= 1:
+            raise ValueError(f"`keyframeShare` is not a number over 0, up to 1: {share!r}")
         return scenes.Settings(
             embedding_weight=_fraction(settings, "embeddingWeight", defaults.embedding_weight),
             min_scene_duration=float(min_duration),
@@ -655,6 +681,8 @@ class TagScenes(_Tag):
             min_coverage=_fraction(settings, "minCoverage", defaults.min_coverage),
             max_tags=max_tags,
             include_tags=_switch(settings, "includeTags", defaults.include_tags),
+            keyframe_tags={name: float(weight) for name, weight in weights.items()},
+            keyframe_share=float(share),
         )
 
     def _scenes(
@@ -727,7 +755,10 @@ class TagScenes(_Tag):
                 }
                 for i, (frame, mine) in enumerate(zip(source.frames, own, strict=True))
             ]
-        result = _frames_result(path, source, fields, self._warnings(tagger, embedding=True))
+        warnings = self._warnings(tagger, embedding=True)
+        if left_out := scenes.keyframe_weights(tagged, grouping).left_out:
+            warnings.append(keyframe_tags_left_out(tagger, left_out))
+        result = _frames_result(path, source, fields, warnings)
         ctx.progress(1.0, f"Found {pooled['count']} scenes in {total} frames")
         return result
 

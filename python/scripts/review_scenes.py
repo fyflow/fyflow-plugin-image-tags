@@ -62,6 +62,8 @@ SETTINGS = (
     "ignoreTags",
     "minCoverage",
     "includeTags",
+    "keyframeTags",
+    "keyframeShare",
 )
 #: The constants `--set` may give, and the module each is in.
 CONSTANTS = {

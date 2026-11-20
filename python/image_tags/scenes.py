@@ -145,6 +145,56 @@ class Settings:
     min_coverage: float = 0.3
     max_tags: int = 40
     include_tags: bool = True
+    #: Tag → weight steering each scene's keyframe (`keyframeTags`); a rating is keyed `rating:<label>`.
+    keyframe_tags: Mapping[str, float] = field(default_factory=dict)
+    #: The share of a scene's non-blank frames, the most typical first, that may be its keyframe (`keyframeShare`).
+    keyframe_share: float = 0.5
+
+
+#: How a rating is keyed in `keyframeTags`.
+RATING_KEY = "rating:"
+
+
+@dataclass(frozen=True)
+class KeyframeWeights:
+    """`keyframeTags` as places: the weighted tags (in the tag list) and ratings (in `rating_labels`), each with its
+    weight, and the names left out: those the tagger lacks, and those `ignoreTags` drops."""
+
+    tags: np.ndarray
+    tag_weights: np.ndarray
+    ratings: np.ndarray
+    rating_weights: np.ndarray
+    left_out: tuple[str, ...]
+
+    def __bool__(self) -> bool:
+        return bool(len(self.tags) or len(self.ratings))
+
+
+def keyframe_weights(frames: TaggedFrames, settings: Settings) -> KeyframeWeights:
+    """`settings.keyframe_tags` against the tagger's tag list. A tag is any of the list's with a category (a rating's
+    row has none: it is keyed `rating:<label>` instead); a tag in `ignore_tags` is left out."""
+    place = {}
+    for i, (name, category) in enumerate(zip(frames.names, frames.categories, strict=True)):
+        if category is not None:
+            place.setdefault(name, i)
+    rating_place = {RATING_KEY + label: i for i, label in enumerate(frames.rating_labels)}
+    tags, tag_weights, ratings, rating_weights, left_out = [], [], [], [], []
+    for name, weight in settings.keyframe_tags.items():
+        if name in rating_place:
+            ratings.append(rating_place[name])
+            rating_weights.append(float(weight))
+        elif name in place and name not in settings.ignore_tags:
+            tags.append(place[name])
+            tag_weights.append(float(weight))
+        else:
+            left_out.append(name)
+    return KeyframeWeights(
+        np.array(tags, dtype=np.int64),
+        np.array(tag_weights, dtype=np.float64),
+        np.array(ratings, dtype=np.int64),
+        np.array(rating_weights, dtype=np.float64),
+        tuple(left_out),
+    )
 
 
 @dataclass
@@ -404,6 +454,7 @@ def pool(frames: TaggedFrames, grouping: Grouping, settings: Settings = Settings
     in_tags = np.zeros(len(frames.names), dtype=bool)
     in_tags[pooled] = True
     highlightable = _kept(frames, settings, SHOT_SPECIFIC_TAGS | settings.ignore_tags)
+    weights = keyframe_weights(frames, settings)
     on_time = np.zeros(len(frames.names))
     on_score = np.zeros(len(frames.names))
     total_time = 0.0
@@ -422,7 +473,7 @@ def pool(frames: TaggedFrames, grouping: Grouping, settings: Settings = Settings
         }
         if k:
             scene["boundary"] = {"link": grouping.links[k]}
-        scene["keyframe"] = _keyframe(frames, grouping, members, seen, span)
+        scene["keyframe"] = _keyframe(frames, grouping, settings, weights, members, seen, span)
         rating = _rating(frames, grouping, seen if len(seen) else members, span)
         if rating is not None:
             scene["rating"] = rating
@@ -468,15 +519,39 @@ def _at(frames: TaggedFrames, frame: int) -> dict:
     return out
 
 
-def _keyframe(frames, grouping, members, seen, span) -> dict:
-    """The non-blank frame whose centred embedding is most like the scene's mean one, or the middle frame of an
-    all-blank scene."""
+def _keyframe(frames, grouping, settings, weights, members, seen, span) -> dict:
+    """The most typical non-blank frame: its centred embedding the most like the scene's mean one. With `weights`
+    (`keyframeTags`), the one of the `keyframe_share` most typical whose smoothed scores weigh the most, ties going to
+    the more typical. The middle frame of an all-blank scene."""
     if not len(seen):
         return _at(frames, members[len(members) // 2])
     emb = np.asarray(frames.embeddings)
     unit = (emb[seen] - grouping.centre) / grouping.radius[seen, None]
-    mean = span[seen] @ unit
-    return _at(frames, seen[int(np.argmax(unit @ mean))])
+    typical = unit @ (span[seen] @ unit)
+    by_typical = np.argsort(-typical, kind="stable")
+    if not weights:
+        return _at(frames, seen[by_typical[0]])
+    candidates = by_typical[: max(1, math.ceil(settings.keyframe_share * len(seen) - 1e-9))]
+    preference = _preference(frames, grouping, weights, seen)[candidates]
+    best = candidates[np.flatnonzero(preference >= preference.max() - 1e-9)[0]]
+    return _at(frames, seen[best])
+
+
+def _preference(frames, grouping, weights: KeyframeWeights, seen) -> np.ndarray:
+    """Each of the non-blank frames `seen` (in time order): its weighted tags' and ratings' scores, smoothed among
+    them as for a tag's on and off, times their weights, summed. A tag under `SCORE_FLOOR` counts as 0."""
+    raw = np.zeros((len(seen), len(weights.tags) + len(weights.ratings)))
+    if len(weights.tags):
+        row, tag, value = frames.scores.entries(seen)
+        column = np.full(len(frames.names), -1, dtype=np.int64)
+        column[weights.tags] = np.arange(len(weights.tags))
+        keep = (column[tag] >= 0) & (value >= SCORE_FLOOR)
+        raw[row[keep], column[tag[keep]]] = value[keep]
+    if len(weights.ratings):
+        raw[:, len(weights.tags) :] = np.asarray(frames.ratings, dtype=np.float64)[np.ix_(seen, weights.ratings)]
+    times = np.asarray(frames.timestamps, dtype=np.float64)[seen]
+    span = np.maximum(grouping.end[seen] - grouping.start[seen], 1e-9)
+    return _smooth(raw, times, span) @ np.concatenate([weights.tag_weights, weights.rating_weights])
 
 
 def _mean_ratings(frames, rows, span) -> dict:

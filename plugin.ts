@@ -792,6 +792,7 @@ export const SCENE_DEFAULTS = {
   minSceneDuration: 15,
   minCoverage: 0.3,
   includeTags: true,
+  keyframeShare: 0.5,
   includeFrames: false,
 } as const;
 
@@ -852,6 +853,27 @@ const tagScenesSettingsSchema = {
       description:
         "Hand on each scene's tags and highlights, and the summary's tags; false leaves a scene only its times, " +
         "frames, rating and keyframe. Left empty, true",
+    },
+    keyframeTags: {
+      type: "object",
+      additionalProperties: true,
+      description:
+        "Tag → weight, steering each scene's keyframe toward frames with these tags (a positive weight) or away " +
+        "from them (a negative one); a rating is keyed rating:<label>. The keyframe is the frame among the scene's " +
+        "most typical (keyframeShare) whose tags weigh the most; ties, and scenes where no such frame has a " +
+        "weighted tag, go to the most typical frame. Left empty, the most typical frame. Named as the tagger names " +
+        "tags; a tag it lacks, or one ignoreTags drops, is left out with a warning. Each weight is a number",
+      examples: [{ smile: 1, "close-up": 0.5, blurry: -1, "rating:explicit": -2 }],
+    },
+    keyframeShare: {
+      type: "number",
+      // fyflow's subset has no exclusiveMinimum: the Worker refuses 0.
+      minimum: 0,
+      maximum: 1,
+      description:
+        "With keyframeTags, the share of a scene's non-blank frames, the most typical first, that may be its " +
+        "keyframe: 1 lets every one compete. Over 0, up to 1; left empty, " +
+        `${SCENE_DEFAULTS.keyframeShare}`,
     },
     includeFrames: {
       type: "boolean",

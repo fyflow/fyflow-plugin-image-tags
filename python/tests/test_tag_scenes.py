@@ -13,7 +13,8 @@ from PIL import Image
 
 from image_tags import frames as framing
 from image_tags.frames import BLANK_STD, is_blank, read_frame_list, read_frames
-from image_tags.worker import TagFrames, TagScenes
+from image_tags.catalogue import TAGGERS
+from image_tags.worker import TagFrames, TagScenes, keyframe_tags_left_out
 from tests.conftest import IMAGES, Context, Task, run
 from tests.test_classify_frames import SHEETS, frames_folder, thumbnail
 from tests.test_tag_frames import cpu_warning
@@ -135,6 +136,24 @@ def test_the_scenes_settings_reach_grouping(tagger_hub, config, tmp_path):
     assert result["scenes"][0]["frames"] == list(range(len(frames)))
 
 
+def test_keyframe_tags_the_tagger_lacks_or_ignore_tags_drops_are_left_out_with_a_warning(tagger_hub, config, tmp_path):
+    frames, _ = video(tmp_path)
+
+    result = tag_scenes(
+        config,
+        {"frames": frames},
+        keyframeTags={"1girl": 1, "rating:explicit": -2, "no_such_tag": 1, "outdoors": 1},
+        keyframeShare=1,
+        ignoreTags=["outdoors"],
+    )
+
+    assert result["count"] == 3
+    assert result["warnings"] == [cpu_warning(), keyframe_tags_left_out(TAGGERS["stand-in"], ["no_such_tag", "outdoors"])]
+    # Each scene's frames are one image: every frame weighs the same, so each keyframe is still its scene's image.
+    for k, scene in enumerate(result["scenes"]):
+        assert scene["keyframe"]["path"] == str(SCENE_IMAGES[k])
+
+
 def test_a_folder_of_thumbnails_gives_the_video_and_its_duration(tagger_hub, config, tmp_path):
     folder = tmp_path / "thumbnails"
     folder.mkdir()
@@ -189,6 +208,12 @@ def test_a_folder_of_plain_images_fails_saying_how_to_get_timestamps(tagger_hub,
         ({"maxTags": 0}, r"^`maxTags` is not a whole number of 1 or more"),
         ({"thresholds": {"copyright": 0.3}}, r"^stand-in has no category `copyright`"),
         ({"lists": "both"}, r'^`lists` is not "result" or "file"'),
+        ({"keyframeTags": ["smile"]}, r"^`keyframeTags` is not a map of tags to numbers"),
+        ({"keyframeTags": {"smile": "1"}}, r"^`keyframeTags` is not a map of tags to numbers"),
+        ({"keyframeTags": {"smile": True}}, r"^`keyframeTags` is not a map of tags to numbers"),
+        ({"keyframeTags": {"": 1}}, r"^`keyframeTags` is not a map of tags to numbers"),
+        ({"keyframeShare": 0}, r"^`keyframeShare` is not a number over 0, up to 1: 0"),
+        ({"keyframeShare": 1.5}, r"^`keyframeShare` is not a number over 0, up to 1: 1.5"),
     ],
 )
 def test_bad_settings_fail_the_task_before_anything_downloads(tagger_hub, config, tmp_path, settings, message):
