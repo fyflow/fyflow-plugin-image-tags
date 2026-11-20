@@ -111,6 +111,8 @@ doesn't change ClassifyFrames' or TagFrames' output.
 | `ignoreTags` | [] | tags to leave out everywhere: grouping, scene and summary tags, highlights. The built-in shot-specific list is left out of grouping and highlights only |
 | `minCoverage` | 0.3 | a scene lists a tag when it is on for this share of the scene's time |
 | `includeTags` | true | hand on each scene's tags and highlights. With false, a scene has only times, frames, rating and keyframe |
+| `keyframeTags` | {} | tag → weight, steering each scene's keyframe toward frames with these tags (positive) or away from them (negative): `{"smile": 1, "blurry": -1, "rating:explicit": -2}`. A rating is keyed `rating:<label>`. Empty: the keyframe is the most typical frame, as before (§5.5) |
+| `keyframeShare` | 0.5 | with `keyframeTags`, the share of a scene's non-blank frames, the most typical first, that may be its keyframe, from just over 0 to 1. 1 lets every non-blank frame compete. Without `keyframeTags` it changes nothing |
 | `includeFrames` | false | also hand on each frame's own tags and rating (§3.4). When off, no per-frame tags appear anywhere: not in the result, not in the file |
 | `lists`, `output`, `overwrite` | `result`, none, false | as the other frames Node Types (`fileSettingsProperties`), see §3.5 |
 
@@ -336,8 +338,21 @@ or rating.
     Otherwise it is the highest of the mean scores.
   - `scores` are the mean scores.
   - `peaks` are the ratings more severe than `label` that reach `PEAK_REPEAT` in any frame, each at its peak frame.
-- **Keyframe:** the non-blank frame whose centred embedding is closest to the scene's mean centred embedding. For an
-  all-blank scene, the middle frame.
+- **Keyframe:**
+  - **Typicality:** a non-blank frame's cosine between its centred embedding and the scene's duration-weighted mean
+    centred embedding. Without `keyframeTags`, the keyframe is the most typical non-blank frame. For an all-blank
+    scene, the middle frame.
+  - **With `keyframeTags`** (§3.3):
+    - Candidates: the `ceil(keyframeShare × n)` most typical of the scene's `n` non-blank frames, at least one.
+    - Each candidate's preference is `Σ weight × score` over the weighted tags. Scores are the frame's smoothed scores
+      within its scene (as for tag on/off; ratings smoothed the same way). A tag under `SCORE_FLOOR` counts as 0.
+    - The keyframe is the candidate with the highest preference. Ties (within 1e-9) go to the more typical frame.
+      So when no candidate has a weighted tag, the keyframe is the most typical frame, as without the setting.
+    - Any tag of the tag list may be weighted, shot-specific ones too (`close-up` makes sense here). `ignoreTags`
+      wins over it: an ignored tag's weight counts as 0.
+  - Tags `keyframeTags` names that the tagger lacks, and ignored ones, are left out with one warning naming them;
+    the Task still runs, since tag lists differ between taggers. A weight that is not a finite number, or a
+    `keyframeShare` outside (0, 1], fails the Task before anything is read.
 - **Summary:**
   - `tags`: each tag's coverage over the whole video, computed scene by scene as above (so smoothing never crosses a
     boundary) and weighted by scene time. `score` is the mean score while on. `minCoverage` and `maxTags` apply.
