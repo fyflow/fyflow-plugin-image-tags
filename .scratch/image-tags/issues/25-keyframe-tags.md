@@ -47,6 +47,7 @@ most typical frame when none of them has a weighted tag. See `TagScenes-spec.md`
   - the Worker: the warning for unknown and ignored tags; bad weights and shares fail; both echoed in `settings`
   - `plugin.test.ts`: the schema has both settings, and `SCENE_DEFAULTS` the share
 - [x] `pnpm check` passes (454 pytest, 87 vitest). Not run on real models: that waits for the user's go-ahead.
+- [x] Released in 0.5.0 (2026-11-20); index PR fyflow/fyflow-plugins#16. Still to do by hand: try it on real videos.
 
 ## Changed while building it (2026-11-20)
 
